@@ -45,7 +45,7 @@ class TrumpTweets():
 
     def compile(self, fname_in = 'tweets.json', fname_out = 'tweets.csv'):
         ''' Load in the tweets from a json file, split into phrases, count
-            syllables and save as a Pandas dataframe.
+            syllables and save as a csv file to be loaded by the load() method.
     
             INPUT
                 fname_in = 'tweets.json'
@@ -88,7 +88,8 @@ class TrumpTweets():
             fname = 'tweets.csv'
                 The file name to be loaded
         '''
-        self.tweets = pd.read_csv(fname_in)
+        import pandas as pd
+        self.tweets = pd.read_csv(fname)
         return self
 
     def rnd_phrase(self, syllables = None):
@@ -130,7 +131,7 @@ class TrumpTweets():
 if __name__ == '__main__':
 
     tt = TrumpTweets()
-    tt.compile()
+    tt.load()
 
     print('\nHAIKU 1:')
     print(tt.haiku())
