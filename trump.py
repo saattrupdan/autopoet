@@ -12,7 +12,7 @@ class SyllableCounter():
             doc
                 An string
         OUTPUT
-            A syllable count.
+            A syllable count
         '''
         import numpy as np
         if doc == '':
@@ -61,7 +61,7 @@ class TrumpTweets():
         with open(fname_in, 'r') as file_in:
             tweets = json.load(file_in)
 
-        # Split into sentences, remove commas in numbers, trailing dots
+        # Split into subsentences, remove commas in numbers, trailing dots
         # in the beginning of the sentences, and collapse multiple spaces
         # into a single one
         tweets = (re.split(r' *[.,!]($| +)', 
@@ -143,14 +143,20 @@ class TrumpTweets():
 
 if __name__ == '__main__':
 
-    tt = TrumpTweets()
-    tt.load()
+    #tt = TrumpTweets()
+    #tt.load()
 
-    print('\nHAIKU 1:')
-    print(tt.haiku())
+    #print('\nHAIKU 1:')
+    #print(tt.haiku())
 
-    print('\nHAIKU 2:')
-    print(tt.haiku())
+    #print('\nHAIKU 2:')
+    #print(tt.haiku())
 
-    print('\nHAIKU 3:')
-    print(tt.haiku())
+    #print('\nHAIKU 3:')
+    #print(tt.haiku())
+
+    tweets = pd.read_csv('tweets.csv')
+
+    counter = SyllableCounter()
+    tweets = {'tweet': tweets, 'count': counter.count_docs(tweets)}
+    tweets = pd.DataFrame(tweets)
