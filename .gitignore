@@ -3,3 +3,4 @@
 *.swp
 *.tsv
 *.csv
+venv/*
