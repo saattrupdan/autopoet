@@ -158,8 +158,6 @@ class TrumpTweets():
             with tqdm(tweets) as pbar:
                 pbar.set_description('Splitting tweets into sentences')
                 tweets = list(pool.map(nlp, pbar))
-            pool.close()
-            pool.join()
 
         # Extract sentences from tweets and clean them
         sents = [sent.text for tweet in tweets for sent in tweet.sents]
@@ -171,8 +169,6 @@ class TrumpTweets():
             with tqdm(unpacked_sents) as pbar:
                 pbar.set_description('Splitting sentences into words')
                 unpacked_sents = list(pool.map(nlp, pbar))
-            pool.close()
-            pool.join()
 
         # Count sentence syllables
         with mp.Pool() as pool:
@@ -181,8 +177,6 @@ class TrumpTweets():
                 syllables = list(pool.map(self.sent2syls, pbar))
                 sents = {'sentence': clean_sents, 'syllables': syllables}
                 sents = pd.DataFrame(sents)
-            pool.close()
-            pool.join()
 
         # Remove blank sentences
         sents = sents[sents['syllables'] > 0]
