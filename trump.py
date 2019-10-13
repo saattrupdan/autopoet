@@ -33,7 +33,7 @@ class SyllableCounter():
             A list of syllable counts.
         '''
         from tqdm import tqdm
-        with tqdm(iter(docs), total = len(docs)) as pbar:
+        with tqdm(docs) as pbar:
             pbar.set_description('Counting syllables')
             return list(map(self.count_doc, pbar))
 
@@ -43,61 +43,89 @@ class TrumpTweets():
     def __init__(self):
         self.tweets = None
 
-    def compile(self, fname_in = 'tweets.json', fname_out = 'tweets.csv'):
+    def compile(self, json_file = 'tweets.json'):
         ''' Load in the tweets from a json file, split into phrases, count
-            syllables and save as a csv file to be loaded by load().
+            syllables and save as a tsv file to be loaded by load().
     
             INPUT
                 fname_in = 'tweets.json'
                     The json file containing all the tweets
-                fname_out = 'tweets.csv'
-                    The csv file in which the dataframe will be stored
+                fname_out = 'tweets.tsv'
+                    The tsv file in which the dataframe will be stored
         '''
         import json
+        import spacy
+        from tqdm import tqdm
         import re
-        from itertools import chain
         import pandas as pd
 
-        with open(fname_in, 'r') as file_in:
+        with open(json_file, 'r') as file_in:
             tweets = json.load(file_in)
+            tweets = [tweet['text'] for tweet in tweets]
 
-        # Split into subsentences, remove commas in numbers, trailing dots
-        # in the beginning of the sentences, and collapse multiple spaces
-        # into a single one
-        tweets = (re.split(r' *[.,!]($| +)', 
-                  re.sub(r'([0-9]),([0-9])', r'\1\2', 
-                  re.sub(r'^\.+', '', 
-                  re.sub(r' +', ' ', tweet['text']))))
-                  for tweet in tweets)
+        # Load SpaCy's English NLP model 
+        nlp = spacy.load('en_core_web_sm', disable = ['ner'])
+       
+        # Clean tweets
+        with tqdm(tweets) as pbar:
+            pbar.set_description('Cleaning tweets')
+            re_link = re.compile(r'http[./:a-zA-Z0-9]+')
+            re_number = re.compile(r'[^ ]*[0-9][^ ]*')
+            re_spaces = re.compile(r' +')
+            re_dash = re.compile(r'-+')
+            clean_tweets = [re.sub(re_spaces, ' ', re.sub(re_link, ' ',
+                re.sub(re_number, ' ', re.sub(re_dash, ' ', 
+                re.sub('@', 'at-', tweet))))).lower()
+                for tweet in pbar]
 
-        # Concatenate all the sentences efficiently
-        tweets = list(chain.from_iterable(tweets))
+        # Parse tweets
+        with tqdm(clean_tweets) as pbar:
+            pbar.set_description('Parsing tweets')
+            clean_tweets = [nlp(tweet) for tweet in pbar]
+       
+        # Get vocabulary 
+        vocab = list(set([word.text 
+            for tweet in clean_tweets for word in tweet
+            if word.pos_ not in {'PUNCT', 'SYM', 'SPACE', 'X', 'NUM'}]))
 
-        # Count syllables in the sentences and store in a dataframe
+        # Count syllables in vocab and store in dataframe
         counter = SyllableCounter()
-        tweets = {'tweet': tweets, 'count': counter.count_docs(tweets)}
-        tweets = pd.DataFrame(tweets)
+        vocab = {'word': vocab, 'syllables': counter.count_docs(vocab)}
+        vocab = pd.DataFrame(vocab)
 
         # Remove both blank sentences and sentences that led the syllable
         # count to encounter an error
-        tweets = tweets[tweets['count'] > 0]
-        tweets.dropna(inplace = True)
+        vocab = vocab[vocab['count'] > 0]
+        vocab.dropna(inplace = True)
 
-        # Save the sentences and store them in a class variable
-        tweets.to_csv(fname_out, index = False)
+        # Save vocab
+        vocab.to_csv('vocab.tsv', index = False, sep = '\t')
+        self.vocab = vocab
+
+        # Use syllable counts of words to count syllables in tweets
+        def count_syllables(clean_tweets):
+            syllables = [sum(vocab.loc[vocab['word'] == word.text]\
+                ['syllables'] for word in clean_tweet) 
+                for clean_tweet in clean_tweets]
+            return syllables
+        tweets = {'tweet': tweets, 'syllables': count_syllables(clean_tweets)}
+        tweets = pd.DataFrame(tweets)
+
+        # Save tweets
+        tweets.to_csv('tweets.tsv', index = False, sep = '\t')
         self.tweets = tweets
 
         return self
 
-    def load(self, fname = 'tweets.csv'):
-        ''' Load compiled tweets from a csv file.
+    def load(self, fname = 'tweets.tsv'):
+        ''' Load compiled tweets from a tsv file.
 
         INPUT
-            fname = 'tweets.csv'
+            fname = 'tweets.tsv'
                 The file name to be loaded
         '''
         import pandas as pd
-        self.tweets = pd.read_csv(fname)
+        self.tweets = pd.read_csv(fname, sep = '\t')
         return self
 
     def rnd_phrase(self, syllables = None):
@@ -143,7 +171,8 @@ class TrumpTweets():
 
 if __name__ == '__main__':
 
-    #tt = TrumpTweets()
+    tt = TrumpTweets()
+    tt.compile()
     #tt.load()
 
     #print('\nHAIKU 1:')
@@ -154,9 +183,3 @@ if __name__ == '__main__':
 
     #print('\nHAIKU 3:')
     #print(tt.haiku())
-
-    tweets = pd.read_csv('tweets.csv')
-
-    counter = SyllableCounter()
-    tweets = {'tweet': tweets, 'count': counter.count_docs(tweets)}
-    tweets = pd.DataFrame(tweets)
