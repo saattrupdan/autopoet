@@ -74,7 +74,7 @@ class TrumpTweets():
             self.vocab = None
 
     def map_docs(self, docs, fn, pbar_desc = 'Parsing documents'):
-        ''' Apply function to documents. '''
+        ''' Apply function to iterable of documents. '''
         import multiprocessing as mp
         from tqdm import tqdm
         if self.workers == 1:
@@ -127,7 +127,7 @@ class TrumpTweets():
             pbar_desc = 'Adding parts-of-speech tags to words')
 
         # Build vocabulary 
-        vocab = list(set([word.text 
+        self.vocab = list(set([word.text 
             for tweet in unpacked_tweets for word in tweet
             if word.pos_ not in {'PUNCT', 'SYM', 'SPACE', 'X'}
             and not word._.is_emoji
@@ -135,17 +135,18 @@ class TrumpTweets():
 
         # Count syllables in vocab and store in dataframe
         counter = SyllableCounter()
-        vocab = {'word': vocab, 'syllables': counter.count_docs(vocab)}
-        vocab = pd.DataFrame(vocab)
+        self.vocab = pd.DataFrame({
+            'word': self.vocab, 
+            'syllables': counter.count_docs(self.vocab)
+            })
 
         # Remove both blank sentences and sentences that led the syllable
         # count to encounter an error
-        vocab = vocab[vocab['syllables'] > 0]
-        vocab.dropna(inplace = True)
+        self.vocab.dropna(inplace = True)
+        self.vocab = self.vocab[self.vocab['syllables'] > 0]
 
         # Save vocab
-        vocab.to_csv('vocab.tsv', index = False, sep = '\t')
-        self.vocab = vocab
+        self.vocab.to_csv('vocab.tsv', index = False, sep = '\t')
 
         return self
 
@@ -175,32 +176,31 @@ class TrumpTweets():
             pbar_desc = 'Splitting tweets into sentences')
 
         # Extract sentences from tweets and clean them
-        sents = [sent.text for tweet in tweets for sent in tweet.sents]
-        clean_sents = self.clean_docs(sents)
-        unpacked_sents = self.unpack_docs(sents)
+        self.sents = [sent.text for tweet in tweets for sent in tweet.sents]
 
         # Load SpaCy's English NLP model to parse sentences
         nlp = spacy.load('en_core_web_sm', 
             disable = ['tagger', 'parser', 'ner'])
 
         # Parse sentences
-        unpacked_sents = self.map_docs(unpacked_sents, fn = nlp,
+        unpacked_sents = self.map_docs(self.unpack_docs(self.sents), fn = nlp,
             pbar_desc = 'Splitting sentences into words')
 
         # Count sentence syllables
         syllables = self.map_docs(unpacked_sents, fn = self.sent2syls,
             pbar_desc = 'Counting sentence syllables')
 
-        sents = {'sentence': clean_sents, 'syllables': syllables}
-        sents = pd.DataFrame(sents)
+        self.sents = pd.DataFrame({
+            'sentence': self.clean_docs(self.sents), 
+            'syllables': syllables
+            })
 
         # Remove blank sentences
-        sents = sents[sents['syllables'] > 0]
-        sents.dropna(inplace = True)
+        self.sents.dropna(inplace = True)
+        self.sents = self.sents[self.sents['syllables'] > 0]
 
         # Save sentences
-        sents.to_csv('sents.tsv', index = False, sep = '\t')
-        self.sents = sents
+        self.sents.to_csv('sents.tsv', index = False, sep = '\t')
 
         return self
 
@@ -260,6 +260,9 @@ class TrumpTweets():
             # Make the first letter in the phrase uppercase
             phrase = re.sub(r'^[a-z]', lambda m: m.group(0).upper(), phrase)
 
+            # Remove punctuation at the beginning or end of phrase
+            phrase = re.sub(r'([.,\-… \'\"\”]+$|^[\'\"\”.,\-… ]+)', '', phrase)
+
         except IndexError:
             phrase = f'<No phrase found with {syllables} syllables>'
 
@@ -281,7 +284,7 @@ if __name__ == '__main__':
     tt = TrumpTweets(workers = 1)
     tt.compile()
 
-    print('\nHAIKU 1:')
+    print('HAIKU 1:')
     print(tt.haiku())
 
     print('\nHAIKU 2:')
