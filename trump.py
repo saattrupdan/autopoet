@@ -51,20 +51,42 @@ class SyllableCounter():
 class TrumpTweets():
     ''' Trump tweets from http://www.trumptwitterarchive.com/archive. '''
 
-    def __init__(self):
+    def __init__(self, workers = None):
         import os
         import pandas as pd
+        import multiprocessing as mp
+
+        if workers is None:
+            self.workers = mp.cpu_count()
+        else:
+            self.workers = min(mp.cpu_count(), workers)
 
         if os.path.isfile('sents.tsv'):
-            self.sents = pd.read_csv('sents.tsv', sep = '\t')
+            dtypes = {'sentences': str, 'syllables': int}
+            self.sents = pd.read_csv('sents.tsv', sep = '\t', dtype = dtypes)
         else:
             self.sents = None
 
         if os.path.isfile('vocab.tsv'):
-            self.vocab = pd.read_csv('vocab.tsv', sep = '\t')
+            dtypes = {'words': str, 'syllables': int}
+            self.vocab = pd.read_csv('vocab.tsv', sep = '\t', dtype = dtypes)
         else:
             self.vocab = None
 
+    def map_docs(self, docs, fn, pbar_desc = 'Parsing documents'):
+        ''' Apply function to documents. '''
+        import multiprocessing as mp
+        from tqdm import tqdm
+        if self.workers == 1:
+            with tqdm(docs) as pbar:
+                pbar.set_description(pbar_desc)
+                return list(map(fn, pbar))
+        else: 
+            with mp.Pool(self.workers) as pool:
+                with tqdm(docs) as pbar:
+                    pbar.set_description(pbar_desc)
+                    return list(pool.map(fn, pbar))
+        
     def clean_docs(self, docs):
         ''' Clean an iterable of docs. '''
         import re
@@ -92,9 +114,7 @@ class TrumpTweets():
         ''' Build vocabulary, with syllable counts. '''
         import spacy
         from spacymoji import Emoji
-        from tqdm import tqdm
         import pandas as pd
-        import multiprocessing as mp
 
         unpacked_tweets = self.unpack_docs(tweets)
 
@@ -103,11 +123,9 @@ class TrumpTweets():
         nlp.add_pipe(Emoji(nlp, merge_spans = False), first = True)
 
         # Parse clean tweets
-        with mp.Pool() as pool:
-            with tqdm(unpacked_tweets) as pbar:
-                pbar.set_description('Adding parts-of-speech tags to words')
-                unpacked_tweets = list(pool.map(nlp, pbar))
-            
+        unpacked_tweets = self.map_docs(unpacked_tweets, fn = nlp,
+            pbar_desc = 'Adding parts-of-speech tags to words')
+
         # Build vocabulary 
         vocab = list(set([word.text 
             for tweet in unpacked_tweets for word in tweet
@@ -148,35 +166,33 @@ class TrumpTweets():
         from tqdm import tqdm
         import pandas as pd
         import spacy
-        import multiprocessing as mp
 
-        # Load SpaCy's English NLP model to parse sentences
+        # Load SpaCy's English NLP model to parse tweets
         nlp = spacy.load('en_core_web_sm', disable = ['tagger', 'ner'])
 
         # Parse tweets
-        with mp.Pool() as pool:
-            with tqdm(tweets) as pbar:
-                pbar.set_description('Splitting tweets into sentences')
-                tweets = list(pool.map(nlp, pbar))
+        tweets = self.map_docs(tweets, fn = nlp,
+            pbar_desc = 'Splitting tweets into sentences')
 
         # Extract sentences from tweets and clean them
         sents = [sent.text for tweet in tweets for sent in tweet.sents]
         clean_sents = self.clean_docs(sents)
         unpacked_sents = self.unpack_docs(sents)
 
+        # Load SpaCy's English NLP model to parse sentences
+        nlp = spacy.load('en_core_web_sm', 
+            disable = ['tagger', 'parser', 'ner'])
+
         # Parse sentences
-        with mp.Pool() as pool:
-            with tqdm(unpacked_sents) as pbar:
-                pbar.set_description('Splitting sentences into words')
-                unpacked_sents = list(pool.map(nlp, pbar))
+        unpacked_sents = self.map_docs(unpacked_sents, fn = nlp,
+            pbar_desc = 'Splitting sentences into words')
 
         # Count sentence syllables
-        with mp.Pool() as pool:
-            with tqdm(unpacked_sents) as pbar:
-                pbar.set_description('Counting sentence syllables')
-                syllables = list(pool.map(self.sent2syls, pbar))
-                sents = {'sentence': clean_sents, 'syllables': syllables}
-                sents = pd.DataFrame(sents)
+        syllables = self.map_docs(unpacked_sents, fn = self.sent2syls,
+            pbar_desc = 'Counting sentence syllables')
+
+        sents = {'sentence': clean_sents, 'syllables': syllables}
+        sents = pd.DataFrame(sents)
 
         # Remove blank sentences
         sents = sents[sents['syllables'] > 0]
@@ -204,14 +220,10 @@ class TrumpTweets():
             tweets = json.load(file_in)
             tweets = [tweet['text'] for tweet in tweets]
 
-        if os.path.isfile('vocab.tsv'):
-            self.vocab = pd.read_csv('vocab.tsv', sep = '\t')
-        else:
+        if self.vocab is None:
             self.build_vocab(tweets)
 
-        if os.path.isfile('sents.tsv'):
-            self.sents = pd.read_csv('sents.tsv', sep = '\t')
-        else:
+        if self.sents is None:
             self.build_sents(tweets)
 
         return self
@@ -266,7 +278,7 @@ class TrumpTweets():
 
 if __name__ == '__main__':
 
-    tt = TrumpTweets()
+    tt = TrumpTweets(workers = 1)
     tt.compile()
 
     print('\nHAIKU 1:')
