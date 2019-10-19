@@ -234,7 +234,7 @@ class SyllableCounter(nn.Module):
                 self.history['loss'].append(avg_loss)
                 self.history['val_loss'].append(val_loss.item())
                 desc = f'Epoch {epoch} - loss {avg_loss:.4f} - '\
-                       f'val_loss {val_loss:.4f}'
+                       f'val loss {val_loss:.4f}'
                 epoch_pbar.set_description(desc)
 
             # Check if validation loss has not improved, and stop if we have
