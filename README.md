@@ -1,4 +1,4 @@
-## AutoPoet <img src="https://filedn.com/lRBwPhPxgV74tO0rDoe8SpH/autopoet_data/logo.png" width="50" height="50" alt="Logo of quill pen"/>
+## AutoPoet <img src="https://filedn.com/lRBwPhPxgV74tO0rDoe8SpH/autopoet_data/logo.png" width="30" height="30" alt="Logo of quill pen"/>
 
 Build poems from text sources. Data files related to this repo can be found here:
 
