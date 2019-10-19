@@ -65,9 +65,10 @@ class ConvGrp(nn.Module):
     ''' Sequence of alternating convolutional layers and batch
         normalisations, ending with a skip connection and a max pool. '''
 
-    def __init__(self, ch_in, ch_out, kernel_size, depth = 1):
+    def __init__(self, ch_in, ch_out, kernel_size, dropout, depth):
         super().__init__()
         
+        self.dropout = dropout
         self.depth = depth
         self.convs = nn.ModuleList([])
         self.bns = nn.ModuleList([])
@@ -85,8 +86,8 @@ class ConvGrp(nn.Module):
     def forward(self, x):
         inputs = x
         for i in range(self.depth):
-            x = self.convs[i](x)
-            x = F.relu(x)
+            x = F.relu(self.convs[i](x))
+            x = F.dropout(x, self.dropout)
             x = self.bns[i](x)
         x = torch.sum(torch.stack([x, self.skip(inputs)], dim = 0), dim = 0)
         return F.max_pool1d(x, 2)
@@ -104,10 +105,11 @@ class SyllableCounter(nn.Module):
         embedding_dim = 50
         conv_groups = 3
         depth = 2
-        filters = 125
+        filters = 64
         kernel_size = 3
-        dropout = 0.5
-        fc_units = 100
+        fc_units = 64
+        conv_dropout = 0.2
+        self.fc_dropout = 0.5
 
         self.embed = nn.Embedding(num_embeddings = self.vocab_size, 
             embedding_dim = embedding_dim)
@@ -115,10 +117,12 @@ class SyllableCounter(nn.Module):
         # Convolutional layers
         self.convs = nn.ModuleList([])
         self.convs.append(ConvGrp(embedding_dim, filters, 
-            kernel_size = kernel_size, depth = depth))
+            kernel_size = kernel_size, depth = depth, 
+            dropout = conv_dropout))
         for i in range(conv_groups - 1):
             self.convs.append(ConvGrp(filters * 2 ** i, filters * 2 ** (i + 1),
-                kernel_size = kernel_size, depth = depth))
+                kernel_size = kernel_size, depth = depth, 
+                dropout = conv_dropout))
 
         # Calculate how many flattened units the conv output has
         conv_units = self.seq_len 
@@ -127,7 +131,6 @@ class SyllableCounter(nn.Module):
         conv_units *= (filters * 2 ** (conv_groups - 1))
 
         self.fc = nn.Linear(conv_units, fc_units)
-        self.dropout = nn.Dropout(dropout)
         self.out = nn.Linear(fc_units, 1)
         
         # Store the amount of trainable parameters
@@ -140,8 +143,8 @@ class SyllableCounter(nn.Module):
         for conv in self.convs:
             x = conv(x)
         x = torch.flatten(x, start_dim = 1)
-        x = self.dropout(x)
         x = F.relu(self.fc(x))
+        x = F.dropout(x, self.fc_dropout)
         return F.elu(self.out(x)) + 1
    
     def fit(self, dataset, optimizer, val_split = 0.01, epochs = np.inf, 
