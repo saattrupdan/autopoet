@@ -34,7 +34,7 @@ class SyllableDataset(data.Dataset):
 
         # Load the words
         self.words = pd.read_csv(self.tsv_fname, sep = '\t', usecols = [0],
-                                nrows = self.nrows)
+            nrows = self.nrows)
         
         # Convert the words to lists of characters
         def list_or_nan(x):
@@ -69,8 +69,8 @@ class ConvGrp(nn.Module):
         super().__init__()
         
         self.depth = depth
-        self.convs = []
-        self.bns = []
+        self.convs = nn.ModuleList([])
+        self.bns = nn.ModuleList([])
         self.skip = nn.Conv1d(ch_in, ch_out, kernel_size = 1)
  
         self.convs.append(nn.Conv1d(ch_in, ch_out, kernel_size = kernel_size,
@@ -101,17 +101,17 @@ class SyllableCounter(nn.Module):
         self.char2idx = dataset.char2idx
         
         embedding_dim = 50
-        conv_groups = 3
-        filters = 128
+        conv_groups = 2
+        filters = 64
         kernel_size = 3
-        depth = 1
-        fc_units = 512
+        depth = 2
+        fc_units = 32
 
         self.embed = nn.Embedding(num_embeddings = self.vocab_size, 
             embedding_dim = embedding_dim)
 
         # Convolutional layers
-        self.convs = []
+        self.convs = nn.ModuleList([])
         self.convs.append(ConvGrp(embedding_dim, filters, 
             kernel_size = kernel_size, depth = depth))
         for i in range(conv_groups - 1):
@@ -126,6 +126,10 @@ class SyllableCounter(nn.Module):
 
         self.fc = nn.Linear(conv_units, fc_units)
         self.out = nn.Linear(fc_units, 1)
+        
+        # Store the amount of trainable parameters
+        self.num_trainable_params = sum(param.numel()
+            for param in self.parameters() if param.requires_grad)
 
     def forward(self, x):           
         x = self.embed(x)
@@ -185,7 +189,7 @@ class SyllableCounter(nn.Module):
             sampler = val_sampler)
 
         # Training loop
-        for epoch in count():
+        for epoch in count(start = start_epoch):
 
             # Enable training mode
             self.train()
@@ -219,7 +223,7 @@ class SyllableCounter(nn.Module):
                     loss.backward()
                     optimizer.step()
 
-                    # Exponentially moving average with bias correction
+                    # Exponentially moving average of loss
                     # Note: The float() is there to copy the loss by value
                     #       and not by reference, to allow it to be garbage
                     #       collected and avoid an excessive memory leak
@@ -293,7 +297,7 @@ class SyllableCounter(nn.Module):
                     'model_state_dict': self.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'scheduler_state_dict': scheduler.state_dict()
-                    }, f'counter_{val_loss:.4f}.pt')
+                    }, f'counter_{scores[-1]:.4f}_{monitor}.pt')
 
         return self
 
@@ -350,6 +354,8 @@ if __name__ == '__main__':
         factor = 0.1, patience = 3, min_lr = 1e-6)
     history = None
 
+    print('Number of trainable parameters:', counter.num_trainable_params)
+
     # Get the checkpoint path
     paths = list(Path('.').glob('counter*.pt'))
     if len(paths) > 1:
@@ -364,11 +370,14 @@ if __name__ == '__main__':
 
     # Load the state
     if idx is not None:
-        checkpoint = torch.load(paths[idx])
-        counter.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        history = checkpoint['history']
+        try:
+            checkpoint = torch.load(paths[idx])
+            counter.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            history = checkpoint['history']
+        except RuntimeError:
+            pass
 
     counter.fit(dataset, optimizer = optimizer, scheduler = scheduler,
         history = history, patience = 10, monitor = 'loss')
