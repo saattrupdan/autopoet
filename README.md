@@ -1,6 +1,10 @@
 ## AutoPoet
 
-Build poems from text sources. Currently builds Haikus from previous Trump tweets.
+Build poems from text sources. Data related to this repo can be found here:
+
+<p align = 'center'>
+  [https://filedn.com/lRBwPhPxgV74tO0rDoe8SpH/autopoet_data/](https://filedn.com/lRBwPhPxgV74tO0rDoe8SpH/autopoet_data/)
+</p>
 
 ### Todos
 
