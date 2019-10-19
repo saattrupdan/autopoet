@@ -99,13 +99,15 @@ class SyllableCounter(nn.Module):
         self.seq_len = dataset.seq_len
         self.vocab_size = dataset.vocab_size
         self.char2idx = dataset.char2idx
-        
+      
+        # Architecture hyperparameters
         embedding_dim = 50
-        conv_groups = 2
-        filters = 64
-        kernel_size = 3
+        conv_groups = 3
         depth = 2
-        fc_units = 32
+        filters = 125
+        kernel_size = 3
+        dropout = 0.5
+        fc_units = 100
 
         self.embed = nn.Embedding(num_embeddings = self.vocab_size, 
             embedding_dim = embedding_dim)
@@ -125,6 +127,7 @@ class SyllableCounter(nn.Module):
         conv_units *= (filters * 2 ** (conv_groups - 1))
 
         self.fc = nn.Linear(conv_units, fc_units)
+        self.dropout = nn.Dropout(dropout)
         self.out = nn.Linear(fc_units, 1)
         
         # Store the amount of trainable parameters
@@ -137,6 +140,7 @@ class SyllableCounter(nn.Module):
         for conv in self.convs:
             x = conv(x)
         x = torch.flatten(x, start_dim = 1)
+        x = self.dropout(x)
         x = F.relu(self.fc(x))
         return F.elu(self.out(x)) + 1
    
@@ -351,10 +355,10 @@ if __name__ == '__main__':
     counter = SyllableCounter(dataset)
     optimizer = optim.Adam(counter.parameters(), lr = 1e-4)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode = 'min',
-        factor = 0.1, patience = 3, min_lr = 1e-6)
+        factor = 0.1, patience = 5, min_lr = 1e-6)
     history = None
 
-    print('Number of trainable parameters:', counter.num_trainable_params)
+    print(f'Number of trainable parameters: {counter.num_trainable_params:,d}')
 
     # Get the checkpoint path
     paths = list(Path('.').glob('counter*.pt'))
@@ -380,6 +384,6 @@ if __name__ == '__main__':
             pass
 
     counter.fit(dataset, optimizer = optimizer, scheduler = scheduler,
-        history = history, patience = 10, monitor = 'loss')
+        history = history, patience = 20, monitor = 'loss')
 
     counter.plot()
