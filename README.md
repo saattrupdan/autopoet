@@ -1,4 +1,4 @@
-## autopoet
+## AutoPoet
 
 Build poems from text sources. Currently builds Haikus from previous Trump tweets.
 
