@@ -127,7 +127,7 @@ class SyllableCounter(nn.Module):
     def fit(self, dataset, optimizer, val_split = 0.01, epochs = np.inf, 
         criterion = nn.MSELoss(), scheduler = None, batch_size = 32, 
         target_value = 0, patience = 10, min_delta = 1e-4, ema = 0.99,
-        history = {'loss': [], 'val_loss': []}):
+        history = None):
         from tqdm import tqdm
         from itertools import count
         from pathlib import Path
@@ -135,7 +135,10 @@ class SyllableCounter(nn.Module):
 
         # Initialise parameters
         bad_epochs = 0
-        self.history = history
+        if history is not None:
+            self.history = history
+        else:
+            self.history = {'loss': [], 'val_loss': []}
         start_epoch = len(self.history['loss'])
         acc_batch = start_epoch * len(dataset) // batch_size
         if start_epoch:
@@ -301,6 +304,7 @@ if __name__ == '__main__':
     optimizer = optim.Adam(counter.parameters(), lr = 1e-4)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode = 'min',
         factor = 0.1, patience = 3, min_lr = 1e-6)
+    history = None
 
     # Get the checkpoint path
     paths = list(Path('.').glob('counter*.pt'))
@@ -309,15 +313,18 @@ if __name__ == '__main__':
         for idx, path in enumerate(paths):
             print(idx, path)
         idx = int(input('Type the index of the model you want to load.\n>>> '))
-    else:
+    elif len(paths) == 1:
         idx = 0
+    else:
+        idx = None
 
     # Load the state
-    checkpoint = torch.load(paths[idx])
-    counter.load_state_dict(checkpoint['model_state_dict'])
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-    history = checkpoint['history']
+    if idx is not None:
+        checkpoint = torch.load(paths[idx])
+        counter.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        history = checkpoint['history']
 
     counter.fit(dataset, optimizer = optimizer, scheduler = scheduler,
         history = history, patience = 10)
