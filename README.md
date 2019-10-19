@@ -18,3 +18,13 @@ Build poems from text sources. Data files related to this repo can be found here
 - [ ] Enable working with live tweets
 - [ ] Enable working with other text sources
 - [ ] Build progressive web app that generates poems
+
+### Syllable data
+
+The syllable counter is trained on the Gutenberg Syllable corpus, consisting of ~180,000 English words split into syllables. The `process_gutsyls` notebook converts these into a format which is more convenient for our purposes. The raw dataset can be freely downloaded here:
+
+<p align = 'center'>
+  <a href = 'http://www.gutenberg.org/files/3204/'>
+    http://www.gutenberg.org/files/3204/
+  </a>
+</p>
