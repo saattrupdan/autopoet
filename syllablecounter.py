@@ -207,7 +207,7 @@ class SyllableCounter(nn.Module):
 
             if avg_loss < best_loss:
                 best_loss = avg_loss
-                for p in Path('.').glob('counter*.tar'):
+                for p in Path('.').glob('counter*.pt'):
                     p.unlink()
 
                 torch.save({
@@ -219,7 +219,7 @@ class SyllableCounter(nn.Module):
                     'model_state_dict': self.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'scheduler_state_dict': scheduler.state_dict()
-                    }, f'counter_{avg_loss:.4f}.tar')
+                    }, f'counter_{avg_loss:.4f}.pt')
 
         return self
 
@@ -260,7 +260,7 @@ if __name__ == '__main__':
         factor = 0.1, patience = 3, min_lr = 1e-6)
 
     # Get the checkpoint path
-    paths = list(Path('.').glob('counter*.tar'))
+    paths = list(Path('.').glob('counter*.pt'))
     if len(paths) > 1:
         print('Multiple models found:')
         for idx, path in enumerate(paths):
