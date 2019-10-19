@@ -1,6 +1,6 @@
 ## AutoPoet
 
-Build poems from text sources. Data related to this repo can be found here:
+Build poems from text sources. Data files related to this repo can be found here:
 
 <p align = 'center'>
   <a href = 'https://filedn.com/lRBwPhPxgV74tO0rDoe8SpH/autopoet_data/'>
