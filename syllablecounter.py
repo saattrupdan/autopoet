@@ -295,6 +295,22 @@ class SyllableCounter(nn.Module):
         # Return the sum of the predictions, rounded to nearest integer
         return int(torch.sum(preds))
 
+    def plot(self, save_to = None):
+        import matplotlib.pyplot as plt
+
+        plt.style.use('ggplot')
+        fig, ax = plt.subplots()
+
+        ax.plot(self.history['loss'], color = 'orange', label = 'loss')
+        ax.plot(self.history['val_loss'], color = 'blue', label = 'val_loss')
+        ax.legend()
+
+        if save_to is not None and isinstance(save_to, str):
+            plt.savefig(save_to)
+
+        plt.show()
+        return self
+
 
 if __name__ == '__main__':
     from pathlib import Path
@@ -329,4 +345,4 @@ if __name__ == '__main__':
     counter.fit(dataset, optimizer = optimizer, scheduler = scheduler,
         history = history, patience = 10)
 
-    print(counter.predict('Much computer trickery'))
+    counter.plot()
