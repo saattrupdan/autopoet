@@ -6,21 +6,22 @@ import torch.nn.functional as F
 import torch.utils.data as data
 
 class SyllableDataset(data.Dataset):
+    ''' Dataset with words and syllables. '''
 
     def __init__(self, tsv_fname, nrows = None):
         import string
         
         self.tsv_fname = tsv_fname
         self.nrows = nrows
-        self.seq_len = None
         self.words = None
         self.syllables = None
+        self.seq_len = None
         
         # Create a char -> idx dictionary
         alphabet = list(string.ascii_lowercase)
+        self.vocab_size = len(alphabet) + 1
         self.char2idx = {char: idx for (idx, char) in 
             enumerate(alphabet, start = 1)}
-        self.vocab_size = len(alphabet) + 1
 
     def __len__(self):
         return len(self.words)
@@ -61,7 +62,9 @@ class SyllableDataset(data.Dataset):
         return self
 
 class ConvGrp(nn.Module):
-    
+    ''' Sequence of alternating convolutional layers and batch
+        normalisations, ending with a skip connection and a max pool. '''
+
     def __init__(self, ch_in, ch_out, kernel_size, depth = 1):
         super().__init__()
         
@@ -89,6 +92,7 @@ class ConvGrp(nn.Module):
         return F.max_pool1d(x, 2)
 
 class SyllableCounter(nn.Module):
+    ''' Model that predicts the number of syllables in English documents. '''
     
     def __init__(self, dataset):
         super().__init__()
@@ -97,58 +101,78 @@ class SyllableCounter(nn.Module):
         self.char2idx = dataset.char2idx
         
         embedding_dim = 50
-        kernel_size = 3
+        conv_groups = 3
         filters = 128
+        kernel_size = 3
         depth = 1
         fc_units = 512
 
         self.embed = nn.Embedding(num_embeddings = self.vocab_size, 
             embedding_dim = embedding_dim)
-        self.conv1 = ConvGrp(embedding_dim, filters, 
-            kernel_size = kernel_size, depth = depth)
-        self.conv2 = ConvGrp(filters, filters * 2, 
-            kernel_size = kernel_size, depth = depth)
-        self.conv3 = ConvGrp(filters * 2, filters * 4, 
-            kernel_size = kernel_size, depth = depth)
-        self.fc = nn.Linear((((self.seq_len // 2) // 2) // 2) * (filters * 4), 
-            fc_units)
+
+        # Convolutional layers
+        self.convs = []
+        self.convs.append(ConvGrp(embedding_dim, filters, 
+            kernel_size = kernel_size, depth = depth))
+        for i in range(conv_groups - 1):
+            self.convs.append(ConvGrp(filters * 2 ** i, filters * 2 ** (i + 1),
+                kernel_size = kernel_size, depth = depth))
+
+        # Calculate how many flattened units the conv output has
+        conv_units = self.seq_len 
+        for _ in range(conv_groups):
+            conv_units //= 2
+        conv_units *= (filters * 2 ** (conv_groups - 1))
+
+        self.fc = nn.Linear(conv_units, fc_units)
         self.out = nn.Linear(fc_units, 1)
 
     def forward(self, x):           
         x = self.embed(x)
         x = x.view(-1, x.shape[2], x.shape[1])
-        x = self.conv1(x)
-        x = self.conv2(x)
-        x = self.conv3(x)
+        for conv in self.convs:
+            x = conv(x)
         x = torch.flatten(x, start_dim = 1)
         x = F.relu(self.fc(x))
         return F.elu(self.out(x)) + 1
    
     def fit(self, dataset, optimizer, val_split = 0.01, epochs = np.inf, 
         criterion = nn.MSELoss(), scheduler = None, batch_size = 32, 
-        target_value = 0, patience = 10, min_delta = 1e-4, ema = 0.99,
-        history = None):
+        monitor = 'val_loss', target_value = 0, patience = 10,
+        min_delta = 1e-4, ema = 0.99, history = None):
         from tqdm import tqdm
         from itertools import count
         from pathlib import Path
+        from functools import cmp_to_key
         from sklearn.model_selection import train_test_split
 
-        # Initialise parameters
-        bad_epochs = 0
         if history is not None:
             self.history = history
         else:
             self.history = {'loss': [], 'val_loss': []}
+
+        bad_epochs = 0
         start_epoch = len(self.history['loss'])
         acc_batch = start_epoch * len(dataset) // batch_size
+
+        # Working with all scores rather than the current score since
+        # lists are mutable and floats are not, allowing us to update
+        # the score on the fly
+        scores = self.history[monitor]
+
+        if monitor == 'loss' or monitor == 'val_loss':
+            score_cmp = lambda x, y: x < y
+        else:
+            score_cmp = lambda x, y: x > y
+
         if start_epoch:
             avg_loss = self.history['loss'][-1]
             val_loss = self.history['val_loss'][-1]
-            best_loss = max(history['val_loss'])
+            best_score = max(scores, key = cmp_to_key(score_cmp))
         else:
             avg_loss = 0
             val_loss = 0
-            best_loss = np.inf
+            best_score = np.inf
 
         # Define data loaders
         train_indices, val_indices = train_test_split(range(len(dataset)),
@@ -165,6 +189,12 @@ class SyllableCounter(nn.Module):
 
             # Enable training mode
             self.train()
+
+            # Save old score for later
+            if len(scores):
+                old_score = scores[-1]
+            else:
+                old_score = np.inf
 
             # Stop if we have reached the total number of epochs
             if epoch >= epochs:
@@ -208,9 +238,6 @@ class SyllableCounter(nn.Module):
                 # Calculate average validation loss
                 with torch.no_grad():
 
-                    # Save old loss for later
-                    old_loss = val_loss
-
                     val_loss = 0
                     for xval, yval in val_loader:
 
@@ -229,34 +256,35 @@ class SyllableCounter(nn.Module):
                         num_batches += 1
                     val_loss /= num_batches
 
-                # Save loss and validation loss to history, and update
-                # progress bar
+                # Add to history and update progress bar description
                 self.history['loss'].append(avg_loss)
                 self.history['val_loss'].append(val_loss.item())
                 desc = f'Epoch {epoch} - loss {avg_loss:.4f} - '\
                        f'val loss {val_loss:.4f}'
                 epoch_pbar.set_description(desc)
 
-            # Check if validation loss has not improved, and stop if we have
-            # exceeded patience
-            if val_loss - old_loss > min_delta:
+            # Stop if score has not improved for <patience> many epochs
+            if score_cmp(old_score, scores[-1] - min_delta):
                 bad_epochs += 1
                 if bad_epochs > patience:
-                    print('Loss is not improving, stopping training.')
+                    print('Model is not improving, stopping training.')
                     break
             else:
                 bad_epochs = 0
 
             if scheduler is not None:
-                scheduler.step(val_loss)
+                scheduler.step(scores[-1])
 
-            # Stop when we get below target error
-            if val_loss < target_value:
-                print('Reached target loss, stopping training.')
+            # Stop when we get better than <target_value>
+            if score_cmp(scores[-1], target_value):
+                print('Reached target performance, stopping training.')
                 break
 
-            if val_loss < best_loss:
-                best_loss = avg_loss
+            # Save model if score is best so far
+            if score_cmp(scores[-1], best_score):
+                best_score = scores[-1]
+
+                # Delete older models
                 for p in Path('.').glob('counter*.pt'):
                     p.unlink()
 
@@ -319,7 +347,7 @@ if __name__ == '__main__':
     counter = SyllableCounter(dataset)
     optimizer = optim.Adam(counter.parameters(), lr = 1e-4)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode = 'min',
-        factor = 0.1, patience = 5, min_lr = 1e-6)
+        factor = 0.1, patience = 3, min_lr = 1e-6)
     history = None
 
     # Get the checkpoint path
@@ -343,6 +371,6 @@ if __name__ == '__main__':
         history = checkpoint['history']
 
     counter.fit(dataset, optimizer = optimizer, scheduler = scheduler,
-        history = history, patience = 20)
+        history = history, patience = 10, monitor = 'loss')
 
     counter.plot()
