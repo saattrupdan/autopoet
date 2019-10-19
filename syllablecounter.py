@@ -3,9 +3,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
+import torch.utils.data as data
 
-class SyllableDataset(Dataset):
+class SyllableDataset(data.Dataset):
 
     def __init__(self, tsv_fname, nrows = None):
         import string
@@ -90,11 +90,11 @@ class ConvGrp(nn.Module):
 
 class SyllableCounter(nn.Module):
     
-    def __init__(self, data):
+    def __init__(self, dataset):
         super().__init__()
-        self.seq_len = data.seq_len
-        self.vocab_size = data.vocab_size
-        self.char2idx = data.char2idx
+        self.seq_len = dataset.seq_len
+        self.vocab_size = dataset.vocab_size
+        self.char2idx = dataset.char2idx
         
         embedding_dim = 50
         kernel_size = 3
@@ -124,50 +124,65 @@ class SyllableCounter(nn.Module):
         x = F.relu(self.fc(x))
         return F.elu(self.out(x)) + 1
    
-    def fit(self, traindata, optimizer, valdata = None, epochs = np.inf, 
+    def fit(self, dataset, optimizer, val_split = 0.01, epochs = np.inf, 
         criterion = nn.MSELoss(), scheduler = None, batch_size = 32, 
         target_value = 0, patience = 10, min_delta = 1e-4, ema = 0.99,
-        start_epoch = 0, avg_loss = 0, bad_epochs = 0, best_loss = np.inf,
-        acc_batch = 0):
+        history = {'loss': [], 'val_loss': []}):
         from tqdm import tqdm
         from itertools import count
         from pathlib import Path
+        from sklearn.model_selection import train_test_split
 
-        # Enable training mode
-        self.train()
+        # Initialise parameters
+        bad_epochs = 0
+        self.history = history
+        start_epoch = len(self.history['loss'])
+        acc_batch = start_epoch * len(dataset) // batch_size
+        if start_epoch:
+            avg_loss = self.history['loss'][-1]
+            val_loss = self.history['val_loss'][-1]
+            best_loss = max(history['val_loss'])
+        else:
+            avg_loss = 0
+            val_loss = 0
+            best_loss = np.inf
 
-        trainloader = DataLoader(traindata, shuffle = True,
-            batch_size = batch_size)
+        # Define data loaders
+        train_indices, val_indices = train_test_split(range(len(dataset)),
+            test_size = val_split)
+        train_sampler = data.sampler.SubsetRandomSampler(train_indices)
+        val_sampler = data.sampler.SubsetRandomSampler(val_indices)
+        train_loader = data.DataLoader(dataset, batch_size = batch_size,
+            sampler = train_sampler)
+        val_loader = data.DataLoader(dataset, batch_size = batch_size,
+            sampler = val_sampler)
 
-        if valdata is not None:
-            valloader = DataLoader(valdata, shuffle = True, 
-                batch_size = batch_size)
-
+        # Training loop
         for epoch in count():
+
+            # Enable training mode
+            self.train()
 
             # Stop if we have reached the total number of epochs
             if epoch >= epochs:
                 break
 
-            # Save the current loss for later
-            old_loss = avg_loss
-
             # Epoch loop
-            with tqdm(total = len(traindata)) as epoch_pbar:
+            with tqdm(total = len(train_indices)) as epoch_pbar:
                 epoch_pbar.set_description(f'Epoch {epoch}')
                 acc_loss = 0
-                for inputs, target in trainloader:
+                for xtrain, ytrain in train_loader:
 
                     # Reshape and cast target tensor to float32, because
                     # this is required by the loss function
-                    target = target.view(-1, 1).to(torch.float32)
+                    ytrain = ytrain.view(-1, 1).to(torch.float32)
 
                     # Reset the gradients
                     optimizer.zero_grad()
 
                     # Do a forward pass, calculate loss and backpropagate
-                    outputs = self.forward(inputs)
-                    loss = torch.sqrt(criterion(outputs, target))
+                    yhat = self.forward(xtrain)
+                    loss = torch.sqrt(criterion(yhat, ytrain))
                     loss.backward()
                     optimizer.step()
 
@@ -185,11 +200,43 @@ class SyllableCounter(nn.Module):
                     # Update progress bar description
                     desc = f'Epoch {epoch} - loss {avg_loss:.4f}'
                     epoch_pbar.set_description(desc)
-                    epoch_pbar.update(inputs.shape[0])
+                    epoch_pbar.update(xtrain.shape[0])
 
-            # Check if loss has not improved, and stop if we have
+                # Calculate average validation loss
+                with torch.no_grad():
+
+                    # Save old loss for later
+                    old_loss = val_loss
+
+                    val_loss = 0
+                    for xval, yval in val_loader:
+
+                        # Enable validation mode
+                        self.eval()
+
+                        # Reshape and cast target tensor to float32, 
+                        # because this is required by the loss function
+                        yval = yval.view(-1, 1).to(torch.float32)
+                    
+                        yhat = self.forward(xval)
+                        val_loss += torch.sqrt(criterion(yhat, yval))
+                   
+                    num_batches = len(val_indices) // batch_size
+                    if len(val_indices) % batch_size:
+                        num_batches += 1
+                    val_loss /= num_batches
+
+                # Save loss and validation loss to history, and update
+                # progress bar
+                self.history['loss'].append(avg_loss)
+                self.history['val_loss'].append(val_loss.item())
+                desc = f'Epoch {epoch} - loss {avg_loss:.4f} - '\
+                       f'val_loss {val_loss:.4f}'
+                epoch_pbar.set_description(desc)
+
+            # Check if validation loss has not improved, and stop if we have
             # exceeded patience
-            if avg_loss - old_loss > min_delta:
+            if val_loss - old_loss > min_delta:
                 bad_epochs += 1
                 if bad_epochs > patience:
                     print('Loss is not improving, stopping training.')
@@ -198,28 +245,24 @@ class SyllableCounter(nn.Module):
                 bad_epochs = 0
 
             if scheduler is not None:
-                scheduler.step(avg_loss)
+                scheduler.step(val_loss)
 
             # Stop when we get below target error
-            if avg_loss < target_value:
+            if val_loss < target_value:
                 print('Reached target loss, stopping training.')
                 break
 
-            if avg_loss < best_loss:
+            if val_loss < best_loss:
                 best_loss = avg_loss
                 for p in Path('.').glob('counter*.pt'):
                     p.unlink()
 
                 torch.save({
-                    'start_epoch': epoch,
-                    'bad_epochs': bad_epochs,
-                    'acc_batch': acc_batch,
-                    'avg_loss': avg_loss,
-                    'best_loss': best_loss,
+                    'history': self.history,
                     'model_state_dict': self.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'scheduler_state_dict': scheduler.state_dict()
-                    }, f'counter_{avg_loss:.4f}.pt')
+                    }, f'counter_{val_loss:.4f}.pt')
 
         return self
 
@@ -229,12 +272,12 @@ class SyllableCounter(nn.Module):
         # Enable evaluation mode
         self.eval()
 
-        # Make lower case and remove all non-letter symbols
-        words = doc.split(' ')
-        words = [re.sub(r'[^a-z]', '', word.lower()) for word in words]
-        
         # Stop calculating gradients
         with torch.no_grad():
+
+            # Make lower case and remove all non-letter symbols
+            words = doc.split(' ')
+            words = [re.sub(r'[^a-z]', '', word.lower()) for word in words]
 
             # Convert words to integer sequences of the correct length
             chars = torch.zeros(len(words), self.seq_len, dtype = torch.long)
@@ -253,8 +296,8 @@ class SyllableCounter(nn.Module):
 if __name__ == '__main__':
     from pathlib import Path
 
-    data = SyllableDataset('data/gutsyls.tsv').compile()
-    counter = SyllableCounter(data)
+    dataset = SyllableDataset('data/gutsyls.tsv').compile()
+    counter = SyllableCounter(dataset)
     optimizer = optim.Adam(counter.parameters(), lr = 1e-4)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode = 'min',
         factor = 0.1, patience = 3, min_lr = 1e-6)
@@ -274,14 +317,9 @@ if __name__ == '__main__':
     counter.load_state_dict(checkpoint['model_state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-    start_epoch = checkpoint['start_epoch']
-    bad_epochs = checkpoint['bad_epochs']
-    acc_batch = checkpoint['acc_batch']
-    avg_loss = checkpoint['avg_loss']
-    best_loss = checkpoint['best_loss']
+    history = checkpoint['history']
 
-    counter.fit(data, optimizer = optimizer, scheduler = scheduler,
-        start_epoch = start_epoch, bad_epochs = bad_epochs, 
-        acc_batch = acc_batch, avg_loss = avg_loss, best_loss = best_loss)
+    counter.fit(dataset, optimizer = optimizer, scheduler = scheduler,
+        history = history, patience = 10)
 
     print(counter.predict('Much computer trickery'))
