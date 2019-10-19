@@ -176,8 +176,8 @@ class SyllableCounter(nn.Module):
                 acc_loss = 0
                 for xtrain, ytrain in train_loader:
 
-                    # Reshape and cast target tensor to float32, because
-                    # this is required by the loss function
+                    # Reshape and cast target tensor to float32,
+                    # since this is required by the loss function
                     ytrain = ytrain.view(-1, 1).to(torch.float32)
 
                     # Reset the gradients
@@ -218,7 +218,7 @@ class SyllableCounter(nn.Module):
                         self.eval()
 
                         # Reshape and cast target tensor to float32, 
-                        # because this is required by the loss function
+                        # since this is required by the loss function
                         yval = yval.view(-1, 1).to(torch.float32)
                     
                         yhat = self.forward(xval)
@@ -319,7 +319,7 @@ if __name__ == '__main__':
     counter = SyllableCounter(dataset)
     optimizer = optim.Adam(counter.parameters(), lr = 1e-4)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode = 'min',
-        factor = 0.1, patience = 3, min_lr = 1e-6)
+        factor = 0.1, patience = 5, min_lr = 1e-6)
     history = None
 
     # Get the checkpoint path
@@ -343,6 +343,6 @@ if __name__ == '__main__':
         history = checkpoint['history']
 
     counter.fit(dataset, optimizer = optimizer, scheduler = scheduler,
-        history = history, patience = 10)
+        history = history, patience = 20)
 
     counter.plot()
