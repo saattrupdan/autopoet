@@ -110,42 +110,48 @@ class SyllableCounter(nn.Module):
       
         # Hyperparameters
         embedding_dim = 50
-        depth = 5
+        conv_depth = 3
         filters = 64
-        rnn_units = 128
-        fc_units = 128
+        rnn_units = 64
         self.dropout = 0.0
 
         # Architecture
         self.embed = nn.Embedding(num_embeddings = self.vocab_size, 
             embedding_dim = embedding_dim)
 
-        self.conv = ConvGrp(embedding_dim, filters, kernel_size = 3,
-            depth = depth, dropout = 0.0)
-        self.rnn = nn.GRU(self.seq_len // 2, rnn_units, bidirectional = True)
-        self.fc = nn.Linear(2 * rnn_units, fc_units)
-        self.out = nn.Linear(fc_units * filters, 1)
-
-        # Weight initialisation
-        nn.init.kaiming_normal_(self.fc.weight, nonlinearity = 'relu')
-        nn.init.kaiming_normal_(self.out.weight, nonlinearity = 'relu')
+        self.conv1 = ConvGrp(embedding_dim, filters, kernel_size = 3,
+            depth = conv_depth, dropout = 0.0)
+        self.conv2 = ConvGrp(filters, filters * 2, kernel_size = 3,
+            depth = conv_depth, dropout = 0.0)
+        self.rnn = nn.GRU((self.seq_len // 2) // 2, rnn_units, 
+            bidirectional = True)
+        self.bn = nn.BatchNorm1d(2 * rnn_units)
+        self.timedist = nn.Linear(2 * rnn_units, rnn_units)
+        self.out = nn.Linear((2 * filters) * rnn_units, 1)
 
         # Store the amount of trainable parameters
         self.num_trainable_params = sum(param.numel()
             for param in self.parameters() if param.requires_grad)
 
-    def forward(self, x):           
+    def forward(self, x):
+        x = x.to(torch.long)
         x = self.embed(x)
         x = x.view(-1, x.shape[2], x.shape[1])
-        x = self.conv(x)
+        x = self.conv1(x)
+        x = self.conv2(x)
         x, _ = self.rnn(x)
-        x = self.fc(x)
+        x = self.bn(x)
+        x = self.timedist(x)
         x = F.relu(x)
         x = torch.flatten(x, start_dim = 1)
         x = F.dropout(x, self.dropout)
         x = self.out(x)
         return F.elu(x) + 2
-   
+
+    def summary(self):
+        from torchsummary import summary
+        print(summary(self, input_size = (self.seq_len,)))
+
     def fit(self, dataset, optimizer, val_split = 0.01, epochs = np.inf, 
         criterion = nn.MSELoss(), scheduler = None, batch_size = 32, 
         monitor = 'val_loss', target_value = 0, patience = 10,
@@ -355,8 +361,6 @@ if __name__ == '__main__':
         factor = 0.1, patience = 5, min_lr = 1e-6)
     history = None
 
-    print(f'Number of trainable parameters: {counter.num_trainable_params:,d}')
-
     # Get the checkpoint path
     paths = list(Path('.').glob('counter*.pt'))
     if len(paths) > 1:
@@ -380,7 +384,11 @@ if __name__ == '__main__':
         except RuntimeError:
             pass
 
+    print(f'Number of trainable parameters: {counter.num_trainable_params:,d}')
+    counter.summary()
+
     counter.fit(dataset, optimizer = optimizer, scheduler = scheduler,
-        history = history, patience = 10, monitor = 'loss')
+        history = history, patience = 10, monitor = 'loss', batch_size = 8,
+        ema = 1 - 8e-4)
 
     counter.plot()
