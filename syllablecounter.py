@@ -73,7 +73,7 @@ class ConvGrp(nn.Module):
         self.convs = nn.ModuleList([])
         self.bns = nn.ModuleList([])
         self.skip = nn.Conv1d(ch_in, ch_out, kernel_size = 1)
- 
+
         self.convs.append(nn.Conv1d(ch_in, ch_out, kernel_size = kernel_size,
             padding = (kernel_size - 1) // 2))
         self.bns.append(nn.BatchNorm1d(ch_out))
@@ -83,13 +83,20 @@ class ConvGrp(nn.Module):
                 kernel_size = kernel_size, padding = (kernel_size - 1) // 2))
             self.bns.append(nn.BatchNorm1d(ch_out))
 
+        for conv in self.convs:
+            nn.init.kaiming_normal_(conv.weight, nonlinearity = 'relu')
+
     def forward(self, x):
         inputs = x
         for i in range(self.depth):
-            x = F.relu(self.convs[i](x))
+            z = x
+            x = self.convs[i](x)
+            x = F.relu(x)
             x = F.dropout(x, self.dropout)
             x = self.bns[i](x)
-        x = torch.sum(torch.stack([x, self.skip(inputs)], dim = 0), dim = 0)
+            if x.shape != z.shape:
+                z = self.skip(z)
+            x = torch.sum(torch.stack([x, z], dim = 0), dim = 0)
         return F.max_pool1d(x, 2)
 
 class SyllableCounter(nn.Module):
@@ -101,38 +108,28 @@ class SyllableCounter(nn.Module):
         self.vocab_size = dataset.vocab_size
         self.char2idx = dataset.char2idx
       
-        # Architecture hyperparameters
+        # Hyperparameters
         embedding_dim = 50
-        conv_groups = 3
-        depth = 2
+        depth = 5
         filters = 64
-        kernel_size = 3
-        fc_units = 64
-        conv_dropout = 0.2
-        self.fc_dropout = 0.5
+        rnn_units = 128
+        fc_units = 128
+        self.dropout = 0.0
 
+        # Architecture
         self.embed = nn.Embedding(num_embeddings = self.vocab_size, 
             embedding_dim = embedding_dim)
 
-        # Convolutional layers
-        self.convs = nn.ModuleList([])
-        self.convs.append(ConvGrp(embedding_dim, filters, 
-            kernel_size = kernel_size, depth = depth, 
-            dropout = conv_dropout))
-        for i in range(conv_groups - 1):
-            self.convs.append(ConvGrp(filters * 2 ** i, filters * 2 ** (i + 1),
-                kernel_size = kernel_size, depth = depth, 
-                dropout = conv_dropout))
+        self.conv = ConvGrp(embedding_dim, filters, kernel_size = 3,
+            depth = depth, dropout = 0.0)
+        self.rnn = nn.GRU(self.seq_len // 2, rnn_units, bidirectional = True)
+        self.fc = nn.Linear(2 * rnn_units, fc_units)
+        self.out = nn.Linear(fc_units * filters, 1)
 
-        # Calculate how many flattened units the conv output has
-        conv_units = self.seq_len 
-        for _ in range(conv_groups):
-            conv_units //= 2
-        conv_units *= (filters * 2 ** (conv_groups - 1))
+        # Weight initialisation
+        nn.init.kaiming_normal_(self.fc.weight, nonlinearity = 'relu')
+        nn.init.kaiming_normal_(self.out.weight, nonlinearity = 'relu')
 
-        self.fc = nn.Linear(conv_units, fc_units)
-        self.out = nn.Linear(fc_units, 1)
-        
         # Store the amount of trainable parameters
         self.num_trainable_params = sum(param.numel()
             for param in self.parameters() if param.requires_grad)
@@ -140,12 +137,14 @@ class SyllableCounter(nn.Module):
     def forward(self, x):           
         x = self.embed(x)
         x = x.view(-1, x.shape[2], x.shape[1])
-        for conv in self.convs:
-            x = conv(x)
+        x = self.conv(x)
+        x, _ = self.rnn(x)
+        x = self.fc(x)
+        x = F.relu(x)
         x = torch.flatten(x, start_dim = 1)
-        x = F.relu(self.fc(x))
-        x = F.dropout(x, self.fc_dropout)
-        return F.elu(self.out(x)) + 1
+        x = F.dropout(x, self.dropout)
+        x = self.out(x)
+        return F.elu(x) + 2
    
     def fit(self, dataset, optimizer, val_split = 0.01, epochs = np.inf, 
         criterion = nn.MSELoss(), scheduler = None, batch_size = 32, 
@@ -200,12 +199,6 @@ class SyllableCounter(nn.Module):
 
             # Enable training mode
             self.train()
-
-            # Save old score for later
-            if len(scores):
-                old_score = scores[-1]
-            else:
-                old_score = np.inf
 
             # Stop if we have reached the total number of epochs
             if epoch >= epochs:
@@ -274,17 +267,17 @@ class SyllableCounter(nn.Module):
                        f'val loss {val_loss:.4f}'
                 epoch_pbar.set_description(desc)
 
+            if scheduler is not None:
+                scheduler.step(scores[-1])
+
             # Stop if score has not improved for <patience> many epochs
-            if score_cmp(old_score, scores[-1] - min_delta):
+            if score_cmp(best_score, scores[-1] - min_delta):
                 bad_epochs += 1
                 if bad_epochs > patience:
                     print('Model is not improving, stopping training.')
                     break
             else:
                 bad_epochs = 0
-
-            if scheduler is not None:
-                scheduler.step(scores[-1])
 
             # Stop when we get better than <target_value>
             if score_cmp(scores[-1], target_value):
@@ -356,7 +349,8 @@ if __name__ == '__main__':
 
     dataset = SyllableDataset('data/gutsyls.tsv').compile()
     counter = SyllableCounter(dataset)
-    optimizer = optim.Adam(counter.parameters(), lr = 1e-4)
+    optimizer = optim.Adam(counter.parameters(), lr = 1e-4, 
+        weight_decay = 0)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode = 'min',
         factor = 0.1, patience = 5, min_lr = 1e-6)
     history = None
@@ -387,6 +381,6 @@ if __name__ == '__main__':
             pass
 
     counter.fit(dataset, optimizer = optimizer, scheduler = scheduler,
-        history = history, patience = 20, monitor = 'loss')
+        history = history, patience = 10, monitor = 'loss')
 
     counter.plot()
