@@ -5,35 +5,54 @@ import torch.optim as optim
 import torch.nn.functional as F
 import torch.utils.data as data
 from torchnlp.nn import LockedDropout
-from core import Module, TBatchNorm
+from core import BaseModel, TBatchNorm, TConv
 
-class SyllableCounter(Module):
-    def __init__(self, emb_dim, rnn_dim, num_layers, rnn_drop, lin_dim,
-        lin_drop, params, verbose = 0):
-        super().__init__(verbose)
+class SyllableCounter(BaseModel):
+    def __init__(self, **params):
+        super().__init__(**params)
 
-        self.embed = nn.Embedding(params['vocab_size'], emb_dim)
+        # Model parameters
+        emb_dim = params['emb_dim']
+        rnn_dim = params['rnn_dim']
+        lin1_dim = params['lin1_dim']
+        lin2_dim = params['lin2_dim']
+        num_layers = params.get('num_layers', 1)
+        emb_drop = params.get('emb_drop', 0.0)
+        rnn_drop = params.get('rnn_drop', 0.0)
+        lin_drop = params.get('lin_drop', 0.0)
 
-        self.rnn_drop = LockedDropout(rnn_drop)
+        # Layers
+        self.embed = nn.Embedding(self.vocab_size, emb_dim)
+        self.embed_drop = LockedDropout(emb_drop)
+
         self.rnn = nn.GRU(emb_dim, rnn_dim, bidirectional = True,
-            num_layers = num_layers, dropout = rnn_drop)
-        self.rnn_bn = TBatchNorm(2 * rnn_dim, verbose = verbose)
+            num_layers = num_layers, dropout = rnn_drop * (num_layers > 1))
+        self.rnn_bn = TBatchNorm(2 * rnn_dim)
+        self.rnn_drop = LockedDropout(rnn_drop)
 
+        self.lin1 = nn.Linear(2 * rnn_dim, lin1_dim)
+        self.lin1_bn = TBatchNorm(lin1_dim)
         self.lin_drop = LockedDropout(lin_drop)
-        self.lin = nn.Linear(2 * rnn_dim, lin_dim)
-        self.lin_bn = TBatchNorm(lin_dim, verbose = verbose)
-        self.out = nn.Linear(lin_dim, 1)
+
+        self.lin2 = nn.Linear(lin1_dim, lin2_dim)
+        self.lin2_bn = TBatchNorm(lin2_dim)
+
+        self.out = nn.Linear(lin2_dim, 1)
 
     def forward(self, x):
         x = self.embed(x)
+        x = self.embed_drop(x)
 
-        x = self.rnn_drop(x)
         x, _ = self.rnn(x)
         x = self.rnn_bn(x)
+        x = self.rnn_drop(x)
 
+        x = F.relu(self.lin1(x))
+        x = self.lin1_bn(x)
         x = self.lin_drop(x)
-        x = F.relu(self.lin(x))
-        x = self.lin_bn(x)
+
+        x = F.relu(self.lin2(x))
+        x = self.lin2_bn(x)
 
         out = torch.sigmoid(self.out(x)).squeeze()
         return out
@@ -56,15 +75,15 @@ class BatchWrapper:
     def __len__(self):
         return len(self.dl)
 
-def get_data(file_name, batch_size, split_ratio = 0.99):
+def get_data(file_name, batch_size = 32, split_ratio = 0.99):
     ''' Build the datasets to feed into our model.
 
     INPUT
         file_name
             The name of the tsv file containing the data, located in the
             'data' folder
-        batch_size
-            The amount of samples (=paragraphs) we load in from the dataset
+        batch_size = 32
+            The amount of samples (= paragraphs) we load in from the dataset
             at a time
         split_ratio = 0.99
             The proportion of the dataset that we will train on. We will
@@ -92,7 +111,9 @@ def get_data(file_name, batch_size, split_ratio = 0.99):
         )
 
     # Split dataset into a training set and a validation set in a stratified
-    # fashion, so that both datasets will have the same syllable distribution
+    # fashion, so that both datasets will have the same syllable distribution.
+    # Also set a random seed, to ensure that we retain the same train/val
+    # split when we are loading a previously saved model
     random.seed(42)
     train, val = dataset.split(split_ratio = split_ratio, stratified = True,
         strata_field = 'syls', random_state = random.getstate())
@@ -117,9 +138,70 @@ def get_data(file_name, batch_size, split_ratio = 0.99):
     val_dl = BatchWrapper(val_iter)
 
     # Save a few parameters that are used elsewhere
-    params = {'vocab_size': len(TXT.vocab)}
+    dparams = {'vocab_size': len(TXT.vocab), 'char2idx': dict(TXT.vocab.stoi)}
 
-    return train_dl, val_dl, params
+    return train_dl, val_dl, dparams
+
+def load_model():
+    ''' Helper function to load a previously saved model. '''
+    counter, _, _, _ = load()
+    return counter
+
+def load(**params):
+    ''' Load model, optimizer, scheduler and loss function. '''
+    from functools import partial
+    from pathlib import Path
+
+    lr = params.get('learning_rate', 3e-4)
+    step_size = params.get('decay', (10, 1.0))[0]
+    gamma = params.get('decay', (10, 1.0))[1]
+    pos_weight = params.get('pos_weight', 1)
+    smoothing = params.get('smoothing', 0.0)
+
+    # Build loss function
+    criterion = partial(custom_bce, pos_weight = pos_weight, 
+        smoothing = smoothing)
+
+    # Get the checkpoint path
+    paths = list(Path('.').glob('counter*.pt'))
+    if len(paths) > 1:
+        print('Multiple models found:')
+        for idx, path in enumerate(paths):
+            print(idx, path)
+        idx = int(input('Type the index of the model you want to load.\n>>> '))
+    elif len(paths) == 1:
+        idx = 0
+    else:
+        idx = None
+
+    # Load the model, optimizer and scheduler
+    try:
+        checkpoint = torch.load(paths[idx])
+
+        counter = SyllableCounter(**checkpoint['params'])
+        optimizer = optim.Adam(counter.parameters(), lr = lr)
+        scheduler = optim.lr_scheduler.StepLR(optimizer, 
+            step_size = step_size, gamma = gamma)
+
+        counter.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        counter.history = checkpoint['history']
+
+    except Exception as e:
+        if idx is not None:
+            print('Exception happened in trying to load checkpoint:')
+            print(f'\tType: {type(e)}')
+            print(f'\tDescription: {type(e).__doc__}')
+            print(f'\tParameters: {e}')
+            print('Ignoring it and training a fresh model')
+
+        counter = SyllableCounter(**params)
+        optimizer = optim.Adam(counter.parameters(), lr = lr)
+        scheduler = optim.lr_scheduler.StepLR(optimizer, 
+            step_size = step_size, gamma = gamma)
+
+    return counter, optimizer, scheduler, criterion
 
 def custom_bce(pred, target, pos_weight = 1, smoothing = 0.0, epsilon = 1e-12):
     ''' 
@@ -140,8 +222,6 @@ def custom_bce(pred, target, pos_weight = 1, smoothing = 0.0, epsilon = 1e-12):
     OUTPUT
         The binary crossentropy
     '''
-    if pred.shape != target.shape:
-        print(pred, target)
     loss_pos = target * torch.log(pred + epsilon)
     loss_pos *= target - smoothing
     loss_pos *= pos_weight
@@ -150,75 +230,46 @@ def custom_bce(pred, target, pos_weight = 1, smoothing = 0.0, epsilon = 1e-12):
     loss_neg *= 1 - target + smoothing
 
     loss = loss_pos + loss_neg
-    return torch.neg(torch.mean(loss))
+    return torch.neg(torch.sum(loss)) / target.shape[1]
+
 
 if __name__ == '__main__':
-    from pathlib import Path
-    from functools import partial
 
     # Hyperparameters
-    LEARNING_RATE = 3e-4
-    DECAY = (10, 0.8)
-    POS_WEIGHT = 1.4
-    SMOOTHING = 0.1
-    BATCH_SIZE = 32
-    EMB_DIM = 50
-    RNN_DIM = 128
-    LIN_DIM = 256
-    NUM_LAYERS = 1
-    RNN_DROP = 0.0
-    LIN_DROP = 0.0
+    hparams = {
+        'emb_dim': 50,
+        'rnn_dim': 256,
+        'lin1_dim': 512,
+        'lin2_dim': 256,
+        'num_layers': 1,
+        'emb_drop': 0.2,
+        'rnn_drop': 0.2,
+        'lin_drop': 0.2,
+        'batch_size': 32,
+        'learning_rate': 3e-4,
+        'decay': (10, 0.8), 
+        'pos_weight': 1.3,
+        'smoothing': 0.15,
+        'verbose': 0,
+        'monitor': 'val_acc',
+        'patience': 9
+        }
 
     # Get data
-    train_dl, val_dl, params = get_data('gutsyls', batch_size = BATCH_SIZE)
+    train_dl, val_dl, dparams = get_data(file_name = 'gutsyls', 
+        batch_size = hparams['batch_size'])
 
-    # Build model, optimizer and scheduler
-    counter = SyllableCounter(emb_dim = EMB_DIM, rnn_dim = RNN_DIM,
-        num_layers = NUM_LAYERS, rnn_drop = RNN_DROP, lin_dim = LIN_DIM,
-        lin_drop = LIN_DROP, params = params, verbose = 0)
-    optimizer = optim.Adam(counter.parameters(), lr = LEARNING_RATE)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, 
-        step_size = DECAY[0], gamma = DECAY[1])
-    history = None
-
-    # Build loss function
-    criterion = partial(custom_bce, pos_weight = POS_WEIGHT, 
-        smoothing = SMOOTHING)
-
-    # Get the checkpoint path
-    paths = list(Path('.').glob('counter*.pt'))
-    if len(paths) > 1:
-        print('Multiple models found:')
-        for idx, path in enumerate(paths):
-            print(idx, path)
-        idx = int(input('Type the index of the model you want to load.\n>>> '))
-    elif len(paths) == 1:
-        idx = 0
-    else:
-        idx = None
-
-    # Load the state
-    if idx is not None:
-        try:
-            checkpoint = torch.load(paths[idx])
-            counter.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-            counter.history = checkpoint['history']
-        except RuntimeError as e:
-            print(e)
-
-    print(f'Training on {len(train_dl) * train_dl.batch_size:,d} samples and '\
-          f'validating on {len(val_dl) * val_dl.batch_size:,d} samples')
-    print(f'Number of trainable parameters: {counter.trainable_params():,d}')
+    # Load model, optimizer, scheduler and loss function
+    counter, optimizer, scheduler, criterion = load(**hparams, **dparams)
 
     # Train the model
     H = counter.fit(train_dl, val_dl, criterion = criterion,
         optimizer = optimizer, scheduler = scheduler, 
-        monitor = 'loss', patience = 9)
+        monitor = hparams['monitor'], patience = hparams['patience'])
 
     # Print report and plots
     counter.report(val_dl)
     counter.report(train_dl)
-    counter.plot(metrics = {'acc, val_acc'})
+    counter.plot(metrics = {'acc', 'val_acc'})
+    counter.plot(metrics = {'val_f1', 'val_prec', 'val_rec'})
     counter.plot(metrics = {'loss', 'val_loss'})
