@@ -4,362 +4,186 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import torch.utils.data as data
+from torchnlp.nn import LockedDropout
+from core import Module, TBatchNorm
 
-class SyllableDataset(data.Dataset):
-    ''' Dataset with words and syllables. '''
+class SyllableCounter(Module):
+    def __init__(self, emb_dim, rnn_dim, num_layers, rnn_drop, lin_dim,
+        lin_drop, params, verbose = 0):
+        super().__init__(verbose)
 
-    def __init__(self, tsv_fname, nrows = None):
-        import string
-        
-        self.tsv_fname = tsv_fname
-        self.nrows = nrows
-        self.words = None
-        self.syllables = None
-        self.seq_len = None
-        
-        # Create a char -> idx dictionary
-        alphabet = list(string.ascii_lowercase)
-        self.vocab_size = len(alphabet) + 1
-        self.char2idx = {char: idx for (idx, char) in 
-            enumerate(alphabet, start = 1)}
+        self.embed = nn.Embedding(params['vocab_size'], emb_dim)
+
+        self.rnn_drop = LockedDropout(rnn_drop)
+        self.rnn = nn.GRU(emb_dim, rnn_dim, bidirectional = True,
+            num_layers = num_layers, dropout = rnn_drop)
+        self.rnn_bn = TBatchNorm(2 * rnn_dim, verbose = verbose)
+
+        self.lin_drop = LockedDropout(lin_drop)
+        self.lin = nn.Linear(2 * rnn_dim, lin_dim)
+        self.lin_bn = TBatchNorm(lin_dim, verbose = verbose)
+        self.out = nn.Linear(lin_dim, 1)
+
+    def forward(self, x):
+        x = self.embed(x)
+
+        x = self.rnn_drop(x)
+        x, _ = self.rnn(x)
+        x = self.rnn_bn(x)
+
+        x = self.lin_drop(x)
+        x = F.relu(self.lin(x))
+        x = self.lin_bn(x)
+
+        out = torch.sigmoid(self.out(x)).squeeze()
+        return out
+
+class BatchWrapper:
+    ''' A wrapper around a dataloader to pull out data in a custom format. 
+    
+    INPUT
+        dl
+            The dataloader we are wrapping
+    '''
+    def __init__(self, dl):
+        self.dl = dl
+        self.batch_size = dl.batch_size
+
+    def __iter__(self):
+        for batch in self.dl:
+            yield (batch.word, batch.syl_seq)
 
     def __len__(self):
-        return len(self.words)
+        return len(self.dl)
 
-    def __getitem__(self, idx):
-        return self.words[idx], self.syllables[idx]
+def get_data(file_name, batch_size, split_ratio = 0.99):
+    ''' Build the datasets to feed into our model.
 
-    def compile(self):
-        import pandas as pd
+    INPUT
+        file_name
+            The name of the tsv file containing the data, located in the
+            'data' folder
+        batch_size
+            The amount of samples (=paragraphs) we load in from the dataset
+            at a time
+        split_ratio = 0.99
+            The proportion of the dataset that we will train on. We will
+            use the remaining part for validation
+    '''
+    from torchtext.data import Field, TabularDataset, BucketIterator
+    import random
 
-        # Load the words
-        self.words = pd.read_csv(self.tsv_fname, sep = '\t', usecols = [0],
-            nrows = self.nrows)
-        
-        # Convert the words to lists of characters
-        def list_or_nan(x):
-            try:
-                return list(x)
-            except TypeError:
-                return np.nan
-        self.words = self.words['words'].apply(list_or_nan).dropna()
+    # Define fields in dataset
+    TXT = Field(tokenize = lambda x: list(x), lower = True)
+    SEQ = Field(tokenize = lambda x: list(map(int, x)), pad_token = 0, 
+        unk_token = 0, is_target = True, dtype = torch.float)
+    NUM = Field(sequential = False, use_vocab = False,
+        preprocessing = lambda x: int(x), dtype = torch.float)
 
-        # Convert the characters to integers
-        self.words = [torch.tensor([self.char2idx.get(char) 
-            for char in word if self.char2idx.get(char) is not None])
-            for word in self.words]
-        
-        # Pad the integer sequences to form a matrix
-        self.words = nn.utils.rnn.pad_sequence(self.words, batch_first = True)
-                
-        # Save the length of the padded sequences
-        self.seq_len = self.words.shape[1]
+    datafields = [('word', TXT), ('syl_seq', SEQ), ('syls', NUM)]
+   
+    # Load in dataset, applying the preprocessing and tokenisation as
+    # described in the fields
+    dataset = TabularDataset(
+        path = 'data/{}.tsv'.format(file_name),
+        format = 'tsv', 
+        skip_header = True,
+        fields = datafields
+        )
 
-        # Load the syllables
-        self.syllables = pd.read_csv(self.tsv_fname, sep = '\t', usecols = [1])
-        self.syllables = torch.tensor(self.syllables.squeeze())
+    # Split dataset into a training set and a validation set in a stratified
+    # fashion, so that both datasets will have the same syllable distribution
+    random.seed(42)
+    train, val = dataset.split(split_ratio = split_ratio, stratified = True,
+        strata_field = 'syls', random_state = random.getstate())
 
-        return self
+    # Build vocabulary
+    TXT.build_vocab(train)
+    SEQ.build_vocab(train)
 
-class ConvGrp(nn.Module):
-    ''' Sequence of alternating convolutional layers and batch
-        normalisations, ending with a skip connection and a max pool. '''
+    # Split the two datasets into batches. This converts the tokenised words 
+    # into integer sequences, and also pads every batch so that, within a 
+    # batch, all sequences are of the same length
+    train_iter, val_iter = BucketIterator.splits(
+        datasets = (train, val),
+        batch_sizes = (batch_size, batch_size),
+        sort_key = lambda x: len(x.word),
+        sort_within_batch = False,
+        )
 
-    def __init__(self, ch_in, ch_out, kernel_size, dropout, depth):
-        super().__init__()
-        
-        self.dropout = dropout
-        self.depth = depth
-        self.convs = nn.ModuleList([])
-        self.bns = nn.ModuleList([])
-        self.skip = nn.Conv1d(ch_in, ch_out, kernel_size = 1)
+    # Apply custom batch wrapper, which outputs the data in the form that
+    # the network wants it
+    train_dl = BatchWrapper(train_iter)
+    val_dl = BatchWrapper(val_iter)
 
-        self.convs.append(nn.Conv1d(ch_in, ch_out, kernel_size = kernel_size,
-            padding = (kernel_size - 1) // 2))
-        self.bns.append(nn.BatchNorm1d(ch_out))
-        
-        for _ in range(depth - 1):
-            self.convs.append(nn.Conv1d(ch_out, ch_out, 
-                kernel_size = kernel_size, padding = (kernel_size - 1) // 2))
-            self.bns.append(nn.BatchNorm1d(ch_out))
+    # Save a few parameters that are used elsewhere
+    params = {'vocab_size': len(TXT.vocab)}
 
-        for conv in self.convs:
-            nn.init.kaiming_normal_(conv.weight, nonlinearity = 'relu')
+    return train_dl, val_dl, params
 
-    def forward(self, x):
-        inputs = x
-        for i in range(self.depth):
-            z = x
-            x = self.convs[i](x)
-            x = F.relu(x)
-            x = F.dropout(x, self.dropout)
-            x = self.bns[i](x)
-            if x.shape != z.shape:
-                z = self.skip(z)
-            x = torch.sum(torch.stack([x, z], dim = 0), dim = 0)
-        return F.max_pool1d(x, 2)
+def custom_bce(pred, target, pos_weight = 1, smoothing = 0.0, epsilon = 1e-12):
+    ''' 
+    Custom version of the binary crossentropy. 
 
-class SyllableCounter(nn.Module):
-    ''' Model that predicts the number of syllables in English documents. '''
-    
-    def __init__(self, dataset):
-        super().__init__()
-        self.seq_len = dataset.seq_len
-        self.vocab_size = dataset.vocab_size
-        self.char2idx = dataset.char2idx
-      
-        # Hyperparameters
-        embedding_dim = 50
-        conv_depth = 3
-        filters = 64
-        rnn_units = 64
-        self.dropout = 0.0
+    INPUT
+        pred
+            A 1-dimensional tensor containing predicted values
+        target
+            A 1-dimensional tensor containing true values
+        pos_weight = 1
+            The weight that should be given to positive examples
+        smoothing = 0.0
+            Smoothing parameter for the presence detection
+        epsilon = 1e-12
+            A small constant to avoid taking logarithm of zero
 
-        # Architecture
-        self.embed = nn.Embedding(num_embeddings = self.vocab_size, 
-            embedding_dim = embedding_dim)
+    OUTPUT
+        The binary crossentropy
+    '''
+    if pred.shape != target.shape:
+        print(pred, target)
+    loss_pos = target * torch.log(pred + epsilon)
+    loss_pos *= target - smoothing
+    loss_pos *= pos_weight
 
-        self.conv1 = ConvGrp(embedding_dim, filters, kernel_size = 3,
-            depth = conv_depth, dropout = 0.0)
-        self.conv2 = ConvGrp(filters, filters * 2, kernel_size = 3,
-            depth = conv_depth, dropout = 0.0)
-        self.rnn = nn.GRU((self.seq_len // 2) // 2, rnn_units, 
-            bidirectional = True)
-        self.bn = nn.BatchNorm1d(2 * rnn_units)
-        self.timedist = nn.Linear(2 * rnn_units, rnn_units)
-        self.out = nn.Linear((2 * filters) * rnn_units, 1)
+    loss_neg = (1 - target) * torch.log(1 - pred + epsilon)
+    loss_neg *= 1 - target + smoothing
 
-        # Store the amount of trainable parameters
-        self.num_trainable_params = sum(param.numel()
-            for param in self.parameters() if param.requires_grad)
-
-    def forward(self, x):
-        x = x.to(torch.long)
-        x = self.embed(x)
-        x = x.view(-1, x.shape[2], x.shape[1])
-        x = self.conv1(x)
-        x = self.conv2(x)
-        x, _ = self.rnn(x)
-        x = self.bn(x)
-        x = self.timedist(x)
-        x = F.relu(x)
-        x = torch.flatten(x, start_dim = 1)
-        x = F.dropout(x, self.dropout)
-        x = self.out(x)
-        return F.elu(x) + 2
-
-    def summary(self):
-        from torchsummary import summary
-        print(summary(self, input_size = (self.seq_len,)))
-
-    def fit(self, dataset, optimizer, val_split = 0.01, epochs = np.inf, 
-        criterion = nn.MSELoss(), scheduler = None, batch_size = 32, 
-        monitor = 'val_loss', target_value = 0, patience = 10,
-        min_delta = 1e-4, ema = 0.99, history = None):
-        from tqdm import tqdm
-        from itertools import count
-        from pathlib import Path
-        from functools import cmp_to_key
-        from sklearn.model_selection import train_test_split
-
-        if history is not None:
-            self.history = history
-        else:
-            self.history = {'loss': [], 'val_loss': []}
-
-        bad_epochs = 0
-        start_epoch = len(self.history['loss'])
-        acc_batch = start_epoch * len(dataset) // batch_size
-
-        # Working with all scores rather than the current score since
-        # lists are mutable and floats are not, allowing us to update
-        # the score on the fly
-        scores = self.history[monitor]
-
-        if monitor == 'loss' or monitor == 'val_loss':
-            score_cmp = lambda x, y: x < y
-        else:
-            score_cmp = lambda x, y: x > y
-
-        if start_epoch:
-            avg_loss = self.history['loss'][-1]
-            val_loss = self.history['val_loss'][-1]
-            best_score = max(scores, key = cmp_to_key(score_cmp))
-        else:
-            avg_loss = 0
-            val_loss = 0
-            best_score = np.inf
-
-        # Define data loaders
-        train_indices, val_indices = train_test_split(range(len(dataset)),
-            test_size = val_split)
-        train_sampler = data.sampler.SubsetRandomSampler(train_indices)
-        val_sampler = data.sampler.SubsetRandomSampler(val_indices)
-        train_loader = data.DataLoader(dataset, batch_size = batch_size,
-            sampler = train_sampler)
-        val_loader = data.DataLoader(dataset, batch_size = batch_size,
-            sampler = val_sampler)
-
-        # Training loop
-        for epoch in count(start = start_epoch):
-
-            # Enable training mode
-            self.train()
-
-            # Stop if we have reached the total number of epochs
-            if epoch >= epochs:
-                break
-
-            # Epoch loop
-            with tqdm(total = len(train_indices)) as epoch_pbar:
-                epoch_pbar.set_description(f'Epoch {epoch}')
-                acc_loss = 0
-                for xtrain, ytrain in train_loader:
-
-                    # Reshape and cast target tensor to float32,
-                    # since this is required by the loss function
-                    ytrain = ytrain.view(-1, 1).to(torch.float32)
-
-                    # Reset the gradients
-                    optimizer.zero_grad()
-
-                    # Do a forward pass, calculate loss and backpropagate
-                    yhat = self.forward(xtrain)
-                    loss = torch.sqrt(criterion(yhat, ytrain))
-                    loss.backward()
-                    optimizer.step()
-
-                    # Exponentially moving average of loss
-                    # Note: The float() is there to copy the loss by value
-                    #       and not by reference, to allow it to be garbage
-                    #       collected and avoid an excessive memory leak
-                    avg_loss = ema * avg_loss + (1 - ema) * float(loss)
-
-                    # Bias correction
-                    # Note: The factor 30 was found empirically
-                    acc_batch += 1
-                    avg_loss /= 1 - ema ** (acc_batch * 30)
-
-                    # Update progress bar description
-                    desc = f'Epoch {epoch} - loss {avg_loss:.4f}'
-                    epoch_pbar.set_description(desc)
-                    epoch_pbar.update(xtrain.shape[0])
-
-                # Calculate average validation loss
-                with torch.no_grad():
-
-                    val_loss = 0
-                    for xval, yval in val_loader:
-
-                        # Enable validation mode
-                        self.eval()
-
-                        # Reshape and cast target tensor to float32, 
-                        # since this is required by the loss function
-                        yval = yval.view(-1, 1).to(torch.float32)
-                    
-                        yhat = self.forward(xval)
-                        val_loss += torch.sqrt(criterion(yhat, yval))
-                   
-                    num_batches = len(val_indices) // batch_size
-                    if len(val_indices) % batch_size:
-                        num_batches += 1
-                    val_loss /= num_batches
-
-                # Add to history and update progress bar description
-                self.history['loss'].append(avg_loss)
-                self.history['val_loss'].append(val_loss.item())
-                desc = f'Epoch {epoch} - loss {avg_loss:.4f} - '\
-                       f'val loss {val_loss:.4f}'
-                epoch_pbar.set_description(desc)
-
-            if scheduler is not None:
-                scheduler.step(scores[-1])
-
-            # Stop if score has not improved for <patience> many epochs
-            if score_cmp(best_score, scores[-1] - min_delta):
-                bad_epochs += 1
-                if bad_epochs > patience:
-                    print('Model is not improving, stopping training.')
-                    break
-            else:
-                bad_epochs = 0
-
-            # Stop when we get better than <target_value>
-            if score_cmp(scores[-1], target_value):
-                print('Reached target performance, stopping training.')
-                break
-
-            # Save model if score is best so far
-            if score_cmp(scores[-1], best_score):
-                best_score = scores[-1]
-
-                # Delete older models
-                for p in Path('.').glob('counter*.pt'):
-                    p.unlink()
-
-                torch.save({
-                    'history': self.history,
-                    'model_state_dict': self.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'scheduler_state_dict': scheduler.state_dict()
-                    }, f'counter_{scores[-1]:.4f}_{monitor}.pt')
-
-        return self
-
-    def predict(self, doc):
-        import re
-
-        # Enable evaluation mode
-        self.eval()
-
-        # Stop calculating gradients
-        with torch.no_grad():
-
-            # Make lower case and remove all non-letter symbols
-            words = doc.split(' ')
-            words = [re.sub(r'[^a-z]', '', word.lower()) for word in words]
-
-            # Convert words to integer sequences of the correct length
-            chars = torch.zeros(len(words), self.seq_len, dtype = torch.long)
-            for word_idx in range(len(words)):
-                for char_idx in range(len(words[word_idx])):
-                    char = words[word_idx][char_idx]
-                    chars[word_idx, char_idx] = self.char2idx.get(char, 0)
-
-            # Get predictions
-            preds = self.forward(chars)
-
-        # Return the sum of the predictions, rounded to nearest integer
-        return int(torch.sum(preds))
-
-    def plot(self, save_to = None):
-        import matplotlib.pyplot as plt
-
-        plt.style.use('ggplot')
-        fig, ax = plt.subplots()
-
-        ax.plot(self.history['loss'], color = 'orange', label = 'loss')
-        ax.plot(self.history['val_loss'], color = 'blue', label = 'val_loss')
-        ax.legend()
-
-        if save_to is not None and isinstance(save_to, str):
-            plt.savefig(save_to)
-
-        plt.show()
-        return self
-
+    loss = loss_pos + loss_neg
+    return torch.neg(torch.mean(loss))
 
 if __name__ == '__main__':
     from pathlib import Path
+    from functools import partial
 
-    dataset = SyllableDataset('data/gutsyls.tsv').compile()
-    counter = SyllableCounter(dataset)
-    optimizer = optim.Adam(counter.parameters(), lr = 1e-4, 
-        weight_decay = 0)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode = 'min',
-        factor = 0.1, patience = 5, min_lr = 1e-6)
+    # Hyperparameters
+    LEARNING_RATE = 3e-4
+    DECAY = (10, 0.8)
+    POS_WEIGHT = 1.4
+    SMOOTHING = 0.1
+    BATCH_SIZE = 32
+    EMB_DIM = 50
+    RNN_DIM = 128
+    LIN_DIM = 256
+    NUM_LAYERS = 1
+    RNN_DROP = 0.0
+    LIN_DROP = 0.0
+
+    # Get data
+    train_dl, val_dl, params = get_data('gutsyls', batch_size = BATCH_SIZE)
+
+    # Build model, optimizer and scheduler
+    counter = SyllableCounter(emb_dim = EMB_DIM, rnn_dim = RNN_DIM,
+        num_layers = NUM_LAYERS, rnn_drop = RNN_DROP, lin_dim = LIN_DIM,
+        lin_drop = LIN_DROP, params = params, verbose = 0)
+    optimizer = optim.Adam(counter.parameters(), lr = LEARNING_RATE)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, 
+        step_size = DECAY[0], gamma = DECAY[1])
     history = None
+
+    # Build loss function
+    criterion = partial(custom_bce, pos_weight = POS_WEIGHT, 
+        smoothing = SMOOTHING)
 
     # Get the checkpoint path
     paths = list(Path('.').glob('counter*.pt'))
@@ -380,15 +204,21 @@ if __name__ == '__main__':
             counter.load_state_dict(checkpoint['model_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-            history = checkpoint['history']
-        except RuntimeError:
-            pass
+            counter.history = checkpoint['history']
+        except RuntimeError as e:
+            print(e)
 
-    print(f'Number of trainable parameters: {counter.num_trainable_params:,d}')
-    counter.summary()
+    print(f'Training on {len(train_dl) * train_dl.batch_size:,d} samples and '\
+          f'validating on {len(val_dl) * val_dl.batch_size:,d} samples')
+    print(f'Number of trainable parameters: {counter.trainable_params():,d}')
 
-    counter.fit(dataset, optimizer = optimizer, scheduler = scheduler,
-        history = history, patience = 10, monitor = 'loss', batch_size = 8,
-        ema = 1 - 8e-4)
+    # Train the model
+    H = counter.fit(train_dl, val_dl, criterion = criterion,
+        optimizer = optimizer, scheduler = scheduler, 
+        monitor = 'loss', patience = 9)
 
-    counter.plot()
+    # Print report and plots
+    counter.report(val_dl)
+    counter.report(train_dl)
+    counter.plot(metrics = {'acc, val_acc'})
+    counter.plot(metrics = {'loss', 'val_loss'})
