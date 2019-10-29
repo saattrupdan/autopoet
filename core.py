@@ -193,7 +193,7 @@ class Module(nn.Module):
 
                     # Update progress bar description
                     desc = f'Epoch {epoch:2d} - loss {avg_loss:.4f}'\
-                           f' - accuracy {avg_acc:.4f}'
+                           f' - acc {avg_acc:.4f}'
                     epoch_pbar.set_description(desc)
                     epoch_pbar.update(train_loader.batch_size)
 
@@ -248,8 +248,8 @@ class Module(nn.Module):
                     # Update progress bar description
                     desc = f'Epoch {epoch:2d} - '\
                            f'loss {avg_loss:.4f} - '\
-                           f'val_loss {val_loss:.4f} - '\
                            f'acc {avg_acc:.4f} - '\
+                           f'val_loss {val_loss:.4f} - '\
                            f'val_acc {syl_acc:.4f} - '\
                            f'val_f1 {val_f1:.4f}'
                     epoch_pbar.set_description(desc)
