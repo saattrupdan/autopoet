@@ -1,61 +1,107 @@
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.optim as optim
-import torch.nn.functional as F
-import torch.utils.data as data
-from torchnlp.nn import LockedDropout
-from core import BaseModel, TBatchNorm, TConv
+from torch import nn
+from torch import optim
+from torch.nn import init
+from torch.nn import functional as F
+from torch.utils import data
+from torchnlp.nn import LockedDropout, WeightDropGRU
+from core import BaseModel, TBatchNorm
 
 class SyllableCounter(BaseModel):
+    ''' Model that finds beginnings of syllables in a single English word.
+
+    INPUT
+        Tensor of shape (seq_len, batch_size), where seq_len is the amount
+        of characters in the given word
+
+    OUTPUT
+        Tensor of shape (seq_len, batch_size) with values in [0, 1], that
+        indicate whether a new syllable begins at that character
+    '''
     def __init__(self, **params):
         super().__init__(**params)
 
         # Model parameters
         emb_dim = params['emb_dim']
-        rnn_dim = params['rnn_dim']
-        lin1_dim = params['lin1_dim']
-        lin2_dim = params['lin2_dim']
-        num_layers = params.get('num_layers', 1)
-        emb_drop = params.get('emb_drop', 0.0)
-        rnn_drop = params.get('rnn_drop', 0.0)
+        rnn_dim = params['enc_dim']
+        rec_drop = params.get('enc_drop', 0.0)
         lin_drop = params.get('lin_drop', 0.0)
 
         # Layers
         self.embed = nn.Embedding(self.vocab_size, emb_dim)
-        self.embed_drop = LockedDropout(emb_drop)
+        self.rnn = WeightDropGRU(emb_dim, rnn_dim, bidirectional = True,
+            num_layers = 3, dropout = lin_drop, weight_dropout = rec_drop)
+        self.out = nn.Linear(2 * rnn_dim, 1)
 
-        self.rnn = nn.GRU(emb_dim, rnn_dim, bidirectional = True,
-            num_layers = num_layers, dropout = rnn_drop * (num_layers > 1))
-        self.rnn_bn = TBatchNorm(2 * rnn_dim)
-        self.rnn_drop = LockedDropout(rnn_drop)
+        self.initialise()
 
-        self.lin1 = nn.Linear(2 * rnn_dim, lin1_dim)
-        self.lin1_bn = TBatchNorm(lin1_dim)
-        self.lin_drop = LockedDropout(lin_drop)
-
-        self.lin2 = nn.Linear(lin1_dim, lin2_dim)
-        self.lin2_bn = TBatchNorm(lin2_dim)
-
-        self.out = nn.Linear(lin2_dim, 1)
+    def initialise(self):
+        for param in self.rnn.parameters():
+            if len(param.shape) >= 2:
+                init.orthogonal_(param.data)
+            else:
+                init.normal_(param.data)
+        return self
 
     def forward(self, x):
         x = self.embed(x)
-        x = self.embed_drop(x)
-
         x, _ = self.rnn(x)
-        x = self.rnn_bn(x)
-        x = self.rnn_drop(x)
+        x = torch.sigmoid(self.out(x))
+        return x.squeeze()
 
-        x = F.relu(self.lin1(x))
-        x = self.lin1_bn(x)
-        x = self.lin_drop(x)
+    def predict(self, doc: str, pred_threshold = 0.5, return_syls = True,
+        return_confidence = False, return_sequence = False):
+        import re
 
-        x = F.relu(self.lin2(x))
-        x = self.lin2_bn(x)
+        doc = str(doc)
+        if re.sub(r'[^a-zA-Z]', '', doc) == '':
+            return 0
 
-        out = torch.sigmoid(self.out(x)).squeeze()
-        return out
+        with torch.no_grad():
+            self.eval()
+
+            # Unpack abbreviations
+            for abbrev, phrase in self.abbrevs.items():
+                doc = re.sub(r'(^|(?<= )){}($|(?=[^a-zA-Z]))'.format(abbrev),
+                    phrase, doc)
+
+            # Split input into words and initialise variables
+            words = re.sub(r'[^a-z ]', '', doc.lower().strip()).split(' ')
+            char_idx, num_syls, confidence = 0, 0, 1
+            if return_sequence:
+                prob_seq = torch.zeros((sum(len(word) for word in words)))
+
+            # Loop over words and accumulate the specified outputs
+            for word in words:
+                if re.sub(r'[^a-zA-Z]', '', word) == '':
+                    probs = torch.tensor([0])
+                else:
+                    probs = self.forward(self.word2bits(word))
+                if return_syls:
+                    syl_seq = probs > pred_threshold
+                    num_syls += torch.sum(syl_seq).int().item()
+                if return_confidence:
+                    confidence *= torch.prod(probs[syl_seq])
+                    confidence *= torch.prod(1 - probs[~syl_seq])
+                if return_sequence:
+                    prob_seq[range(char_idx, char_idx + len(word))] = probs.T
+                    char_idx += len(word)
+
+            # Return the specified outputs
+            out = {}
+            if return_syls:
+                out['num_syls'] = num_syls
+            if return_confidence:
+                out['confidence'] = np.around(confidence.item(), 2)
+            if return_sequence:
+                chars = list(''.join(words))
+                prob_seq = np.around(prob_seq.numpy(), 2)
+                out['probs'] = list(zip(chars, prob_seq))
+            if len(out) == 1:
+                return list(out.values())[0]
+            else:
+                return out
 
 class BatchWrapper:
     ''' A wrapper around a dataloader to pull out data in a custom format. 
@@ -142,12 +188,31 @@ def get_data(file_name, batch_size = 32, split_ratio = 0.99):
 
     return train_dl, val_dl, dparams
 
-def load_model():
-    ''' Helper function to load a previously saved model. '''
-    counter, _, _, _ = load()
+def load_model(name = 'counter'):
+    ''' Load a previously saved model. '''
+    from pathlib import Path
+
+    # Get the checkpoint path
+    paths = list(Path('.').glob(f'{name}*.pt'))
+    if len(paths) > 1:
+        print('Multiple models found:')
+        for idx, path in enumerate(paths):
+            print(idx, path)
+        idx = int(input('Type the index of the model you want to load.\n>>> '))
+    elif len(paths) == 1:
+        idx = 0
+    else:
+        idx = None
+
+    # Load the model
+    checkpoint = torch.load(paths[idx])
+    counter = SyllableCounter(**checkpoint['params'])
+    counter.load_state_dict(checkpoint['model_state_dict'])
+    counter.history = checkpoint['history']
+
     return counter
 
-def load(**params):
+def load(name = 'counter', **params):
     ''' Load model, optimizer, scheduler and loss function. '''
     from functools import partial
     from pathlib import Path
@@ -163,7 +228,7 @@ def load(**params):
         smoothing = smoothing)
 
     # Get the checkpoint path
-    paths = list(Path('.').glob('counter*.pt'))
+    paths = list(Path('.').glob(f'{name}*.pt'))
     if len(paths) > 1:
         print('Multiple models found:')
         for idx, path in enumerate(paths):
@@ -229,8 +294,21 @@ def custom_bce(pred, target, pos_weight = 1, smoothing = 0.0, epsilon = 1e-12):
     loss_neg = (1 - target) * torch.log(1 - pred + epsilon)
     loss_neg *= 1 - target + smoothing
 
-    loss = loss_pos + loss_neg
-    return torch.neg(torch.sum(loss)) / target.shape[1]
+    bce = torch.mean(torch.neg(loss_pos + loss_neg))
+
+    rmse = (torch.sum(pred, dim = 0) - torch.sum(target, dim = 0)) ** 2
+    rmse = torch.mean(torch.sqrt(rmse))
+
+    return (bce + rmse) / 2
+
+    # Comparison of different loss functions after training for one epoch:
+    #
+    # bce = 82.42% accuracy, took 06:52 minutes
+    # bce + mse = 81.47% accuracy, took 06:51 minutes
+    # bce + rmse = 84.42% accuracy, took 07:03 minutes  <--- best
+    # seq_bce = 82.66% accuracy, took 06:57 minutes
+    # seq_bce + mse = 83.29%, took 06:50 minutes
+    # seq_bce + rmse = 83.22%, took 06:57 minutes
 
 
 if __name__ == '__main__':
@@ -238,21 +316,21 @@ if __name__ == '__main__':
     # Hyperparameters
     hparams = {
         'emb_dim': 50,
-        'rnn_dim': 256,
-        'lin1_dim': 512,
-        'lin2_dim': 256,
-        'num_layers': 1,
-        'emb_drop': 0.2,
-        'rnn_drop': 0.2,
-        'lin_drop': 0.2,
-        'batch_size': 32,
+        'enc_dim': 128,
+        'lin_dim': 128,
+        'dec_dim': 128,
+        'rec_drop': 0.2,
+        'lin_drop': 0.5,
+        'batch_size': 16,
         'learning_rate': 3e-4,
-        'decay': (10, 0.8), 
-        'pos_weight': 1.3,
-        'smoothing': 0.15,
+        'decay': (5, 0.8), 
+        'pos_weight': 1.2,
+        'smoothing': 0.1,
         'verbose': 0,
         'monitor': 'val_acc',
-        'patience': 9
+        'patience': np.inf,
+        'ema': 0.9995, # With batch size 16 this averages over 32,000 samples
+        'ema_bias': 400
         }
 
     # Get data
@@ -263,9 +341,10 @@ if __name__ == '__main__':
     counter, optimizer, scheduler, criterion = load(**hparams, **dparams)
 
     # Train the model
-    H = counter.fit(train_dl, val_dl, criterion = criterion,
+    counter.fit(train_dl, val_dl, criterion = criterion,
         optimizer = optimizer, scheduler = scheduler, 
-        monitor = hparams['monitor'], patience = hparams['patience'])
+        monitor = hparams['monitor'], patience = hparams['patience'],
+        ema = hparams['ema'], ema_bias = hparams['ema_bias'])
 
     # Print report and plots
     counter.report(val_dl)
