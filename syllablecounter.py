@@ -5,7 +5,6 @@ from torch import optim
 from torch.nn import init
 from torch.nn import functional as F
 from torch.utils import data
-from torchnlp.nn import LockedDropout, WeightDropGRU
 from core import BaseModel, TBatchNorm
 
 class SyllableCounter(BaseModel):
@@ -24,14 +23,13 @@ class SyllableCounter(BaseModel):
 
         # Model parameters
         emb_dim = params['emb_dim']
-        rnn_dim = params['enc_dim']
-        rec_drop = params.get('enc_drop', 0.0)
-        lin_drop = params.get('lin_drop', 0.0)
+        rnn_dim = params['rnn_dim']
+        rnn_drop = params.get('rnn_drop', 0.0)
 
         # Layers
         self.embed = nn.Embedding(self.vocab_size, emb_dim)
-        self.rnn = WeightDropGRU(emb_dim, rnn_dim, bidirectional = True,
-            num_layers = 3, dropout = lin_drop, weight_dropout = rec_drop)
+        self.rnn = nn.GRU(emb_dim, rnn_dim, bidirectional = True,
+            num_layers = 3, dropout = rnn_drop)
         self.out = nn.Linear(2 * rnn_dim, 1)
 
         self.initialise()
@@ -224,7 +222,7 @@ def load(name = 'counter', **params):
     smoothing = params.get('smoothing', 0.0)
 
     # Build loss function
-    criterion = partial(custom_bce, pos_weight = pos_weight, 
+    criterion = partial(bce_rmse, pos_weight = pos_weight, 
         smoothing = smoothing)
 
     # Get the checkpoint path
@@ -268,9 +266,8 @@ def load(name = 'counter', **params):
 
     return counter, optimizer, scheduler, criterion
 
-def custom_bce(pred, target, pos_weight = 1, smoothing = 0.0, epsilon = 1e-12):
-    ''' 
-    Custom version of the binary crossentropy. 
+def bce_rmse(pred, target, pos_weight = 1, smoothing = 0.0, epsilon = 1e-12):
+    ''' A combination of binary crossentropy and root mean squared error.
 
     INPUT
         pred
@@ -282,10 +279,11 @@ def custom_bce(pred, target, pos_weight = 1, smoothing = 0.0, epsilon = 1e-12):
         smoothing = 0.0
             Smoothing parameter for the presence detection
         epsilon = 1e-12
-            A small constant to avoid taking logarithm of zero
+            A small constant to avoid dividing by zero
 
     OUTPUT
-        The binary crossentropy
+        The average of the character-wise binary crossentropy and the
+        word-wise root mean squared error
     '''
     loss_pos = target * torch.log(pred + epsilon)
     loss_pos *= target - smoothing
@@ -295,17 +293,15 @@ def custom_bce(pred, target, pos_weight = 1, smoothing = 0.0, epsilon = 1e-12):
     loss_neg *= 1 - target + smoothing
 
     bce = torch.mean(torch.neg(loss_pos + loss_neg))
-
-    rmse = (torch.sum(pred, dim = 0) - torch.sum(target, dim = 0)) ** 2
-    rmse = torch.mean(torch.sqrt(rmse))
-
+    mse = (torch.sum(pred, dim = 0) - torch.sum(target, dim = 0)) ** 2
+    rmse = torch.mean(torch.sqrt(mse + epsilon))
     return (bce + rmse) / 2
 
     # Comparison of different loss functions after training for one epoch:
     #
     # bce = 82.42% accuracy, took 06:52 minutes
     # bce + mse = 81.47% accuracy, took 06:51 minutes
-    # bce + rmse = 84.42% accuracy, took 07:03 minutes  <--- best
+    # bce + rmse = 85.90% accuracy, took 06:51 minutes  <--- best
     # seq_bce = 82.66% accuracy, took 06:57 minutes
     # seq_bce + mse = 83.29%, took 06:50 minutes
     # seq_bce + rmse = 83.22%, took 06:57 minutes
@@ -316,11 +312,8 @@ if __name__ == '__main__':
     # Hyperparameters
     hparams = {
         'emb_dim': 50,
-        'enc_dim': 128,
-        'lin_dim': 128,
-        'dec_dim': 128,
-        'rec_drop': 0.2,
-        'lin_drop': 0.5,
+        'rnn_dim': 128,
+        'rnn_drop': 0.5,
         'batch_size': 16,
         'learning_rate': 3e-4,
         'decay': (5, 0.8), 
@@ -328,27 +321,33 @@ if __name__ == '__main__':
         'smoothing': 0.1,
         'verbose': 0,
         'monitor': 'val_acc',
-        'patience': np.inf,
+        'patience': 9,
         'ema': 0.9995, # With batch size 16 this averages over 32,000 samples
         'ema_bias': 400
         }
 
-    # Get data
-    train_dl, val_dl, dparams = get_data(file_name = 'gutsyls', 
-        batch_size = hparams['batch_size'])
+    for rnn_drop in [0.5, 0.4, 0.3, 0.2, 0.1, 0.0]:
+        hparams['rnn_drop'] = rnn_drop
 
-    # Load model, optimizer, scheduler and loss function
-    counter, optimizer, scheduler, criterion = load(**hparams, **dparams)
+        print(f'\nNOW TESTING RNN DROP = {rnn_drop}')
 
-    # Train the model
-    counter.fit(train_dl, val_dl, criterion = criterion,
-        optimizer = optimizer, scheduler = scheduler, 
-        monitor = hparams['monitor'], patience = hparams['patience'],
-        ema = hparams['ema'], ema_bias = hparams['ema_bias'])
+        # Get data
+        train_dl, val_dl, dparams = get_data(file_name = 'gutsyls', 
+            batch_size = hparams['batch_size'])
 
-    # Print report and plots
-    counter.report(val_dl)
-    counter.report(train_dl)
-    counter.plot(metrics = {'acc', 'val_acc'})
-    counter.plot(metrics = {'val_f1', 'val_prec', 'val_rec'})
-    counter.plot(metrics = {'loss', 'val_loss'})
+        # Load model, optimizer, scheduler and loss function
+        counter, optimizer, scheduler, criterion = load(**hparams, 
+            **dparams)
+
+        # Train the model
+        counter.fit(train_dl, val_dl, criterion = criterion,
+            optimizer = optimizer, scheduler = scheduler, 
+            monitor = hparams['monitor'], patience = hparams['patience'],
+            ema = hparams['ema'], ema_bias = hparams['ema_bias'])
+
+        # Print report and plots
+        counter.report(val_dl)
+        counter.report(train_dl)
+        #counter.plot(metrics = {'acc', 'val_acc'})
+        #counter.plot(metrics = {'val_f1', 'val_prec', 'val_rec'})
+        #counter.plot(metrics = {'loss', 'val_loss'})
