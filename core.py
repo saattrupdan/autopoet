@@ -294,6 +294,8 @@ class BaseModel(nn.Module):
 
                 self.save(f'counter_{scores[-1]:.4f}_{monitor}.pt',
                     optimizer = optimizer, scheduler = scheduler)
+                self.save(f'data/counter_{scores[-1]:.4f}_{monitor}.pt',
+                    optimizer = optimizer, scheduler = scheduler)
 
             # Stop if score has not improved for <patience> many epochs
             if score_cmp(best_score, scores[-1]):
