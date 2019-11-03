@@ -19,94 +19,16 @@ class BaseModel(nn.Module):
     def __init__(self, **params):
         super().__init__()
         import logging
+        import pandas as pd
 
         self.params = params
         self.char2idx = params['char2idx']
         self.vocab_size = params['vocab_size']
         self.verbose = params.get('verbose', 0)
         self.history = None
-        self.abbrevs = {
-            'ave': 'avenue',
-            'mr': 'mister',
-            'mrs': 'missus',
-            'hr': 'hour',
-            'ft': 'feet',
-            'ms': 'miss',
-            'pt': 'part',
-            'sq': 'square',
-            'yd': 'yard',
-            'tbs': 'tablespoon',
-            'tbsp': 'tablespoon',
-            'ltd': 'limited',
-            'rd': 'road',
-            'nvm': 'nevermind',
-            'ily': 'i love you',
-            'rly': 'really',
-            'mon': 'monday',
-            'tue': 'tuesday',
-            'wed': 'wednesday',
-            'thu': 'thursday',
-            'fri': 'friday',
-            'sat': 'saturday',
-            'sun': 'sunday',
-            'tbh': 'to be honest',
-            'thx': 'thanks',
-            'thnx': 'thanks',
-            'wat': 'what',
-            'we': 'whatever',
-            'wth': 'what the hell',
-            'wtf': 'what the fuck',
-            'wrk': 'work',
-            'cya': 'see ya',
-            'idk': 'i dont know',
-            'fu': 'fuck you',
-            'omw': 'on my way',
-            'pls': 'please',
-            'plz': 'please',
-            'mph': 'miles per hour',
-            'st': 'saint',
-            'bc': 'because',
-            'b4': 'before',
-            'br': 'best regards',
-            'bfn': 'bye for now',
-            'b': 'be',
-            'btw': 'by the way',
-            'chk': 'check',
-            'cld': 'could',
-            'clk': 'click',
-            'cre8': 'create',
-            'da': 'the',
-            'b2b': 'back to back',
-            'brb': 'be right back',
-            'f2f': 'face to face',
-            'ftw': 'for the win',
-            '#': 'hash tag',
-            '@': 'at',
-            'ic': 'i see',
-            'idk': 'i dont know',
-            'nts': 'note to self',
-            'prt': 'please retweet',
-            'smh': 'shaking my head',
-            'tbh': 'to be honest',
-            'tmb': 'tweet me back',
-            'u': 'you',
-            'woz': 'was',
-            'wtv': 'whatever',
-            'rt': 'retweet',
-            'afaik': 'as far as i know',
-            'l8r': 'later',
-            'cu': 'see you',
-            'fb': 'facebook',
-            'lmk': 'let me know',
-            'stfu': 'shut the fuck up',
-            'ygtr': 'you got that right',
-            'w/e': 'whatever',
-            'yw': 'youre welcome',
-            'w': 'with',
-            'awsum': 'awesome',
-            'awesum': 'awesome',
-            '24/7': 'twenty four seven',
-            }
+        self.abbrevs = dict(
+            pd.read_csv('data/abbrevs.tsv', sep = '\t', header = None).values
+            )
 
         logging.basicConfig()
         logging.root.setLevel(logging.NOTSET)
@@ -127,36 +49,6 @@ class BaseModel(nn.Module):
         for j, char in enumerate(word):
             bits[j, 0] = self.char2idx[char]
         return bits
-
-    def predict(self, doc: str, pred_threshold = 0.5, show_confidence = False):
-        import re
-
-        if doc == '':
-            return 0
-
-        self.eval()
-
-        # Unpack abbreviations
-        for abbrev, phrase in self.abbrevs.items():
-            doc = re.sub(r'(^|(?<= )){}($|(?=[^a-zA-Z]))'.format(abbrev),
-                phrase, doc)
-
-        num_syls = 0
-        confidence = 1
-        words = re.sub(r'[^a-z ]', '', doc.lower().strip()).split(' ')
-        for word in words:
-            probs = self.forward(self.word2bits(word))
-            syl_seq = probs > pred_threshold
-            confidence *= torch.prod(probs[syl_seq])
-            confidence *= torch.prod(1 - probs[~syl_seq])
-            num_syls += torch.sum(syl_seq).int().item()
-
-        if show_confidence:
-            out = (num_syls, np.around(confidence.item(), 4))
-        else:
-            out = num_syls
-
-        return out
 
     def plot(self, metrics = {'val_acc', 'val_f1'}, save_to = None, 
         show_plot = True, title = 'Model performance by epoch',
@@ -228,8 +120,8 @@ class BaseModel(nn.Module):
 
     def fit(self, train_loader, val_loader, criterion, optimizer,
         scheduler = None, epochs = np.inf, monitor = 'val_loss', 
-        target_value = None, patience = 10, ema = 0.99, pred_threshold = 0.5,
-        announce = True):
+        target_value = None, patience = 10, ema = 0.99, ema_bias = 25,
+        pred_threshold = 0.5, announce = True):
         from tqdm import tqdm
         from itertools import count
         from pathlib import Path
@@ -321,10 +213,9 @@ class BaseModel(nn.Module):
                     avg_acc = ema * avg_acc + (1 - ema) * batch_acc
 
                     # Bias correction
-                    # Note: The factors 20 and  25 was found empirically
                     acc_batch += 1
-                    avg_loss /= 1 - ema ** (acc_batch * 25)
-                    avg_acc /= 1 - ema ** (acc_batch * 20)
+                    avg_loss /= 1 - ema ** (acc_batch * ema_bias)
+                    avg_acc /= 1 - ema ** (acc_batch * ema_bias)
 
                     # Update progress bar description
                     desc = f'Epoch {epoch:2d} - loss {avg_loss:.4f}'\
@@ -404,11 +295,6 @@ class BaseModel(nn.Module):
                 self.save(f'counter_{scores[-1]:.4f}_{monitor}.pt',
                     optimizer = optimizer, scheduler = scheduler)
 
-                # Temporary: also save to cloud
-                cloud = '/home/dn16382/pCloudDrive/'
-                self.save(cloud + f'counter_{scores[-1]:.4f}_{monitor}.pt',
-                    optimizer = optimizer, scheduler = scheduler)
-
             # Stop if score has not improved for <patience> many epochs
             if score_cmp(best_score, scores[-1]):
                 bad_epochs += 1
@@ -480,46 +366,17 @@ class TBatchNorm(nn.Module):
     ''' A temporal batch normalisation.
 
     INPUT
-        hidden_size
-            The number of hidden features
+        Tensor of shape (seq_len, batch_size, hidden_size)
+
+    OUTPUT
+        Tensor of shape (seq_len, batch_size, hidden_size)
     '''
     def __init__(self, *args, **kwargs):
         super().__init__()
         self.bn = nn.BatchNorm1d(*args, **kwargs)
 
     def forward(self, x):
-        ''' Forward pass of the network.
-
-        INPUT
-            Tensor of shape (seq_len, batch_size, hidden_size)
-
-        OUTPUT
-            Tensor of shape (seq_len, batch_size, hidden_size)
-        '''
         x = x.permute(1, 2, 0)
         x = self.bn(x)
         x = x.permute(2, 0, 1)
         return x
-
-class TConv(nn.Module):
-    ''' A temporal convolution. '''
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-        self.conv = nn.Conv1d(*args, **kwargs)
-
-    def forward(self, x):
-        ''' Forward pass of the network.
-
-        INPUT
-            Tensor of shape (seq_len, batch_size, hidden_size)
-
-        OUTPUT
-            Tensor of shape (seq_len, batch_size, hidden_size)
-        '''
-        x = x.permute(1, 2, 0)
-        x = self.conv(x)
-        x = x.permute(2, 0, 1)
-        return x
-            
-if __name__ == '__main__':
-    pass
