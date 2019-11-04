@@ -5,7 +5,7 @@ from torch import optim
 from torch.nn import init
 from torch.nn import functional as F
 from torch.utils import data
-from core import BaseModel, TBatchNorm
+from core import BaseModel, SelfAttention
 
 class SyllableCounter(BaseModel):
     ''' Model that finds beginnings of syllables in a single English word.
@@ -22,20 +22,32 @@ class SyllableCounter(BaseModel):
         super().__init__(**params)
 
         # Model parameters
-        emb_dim = params['emb_dim']
-        rnn_dim = params['rnn_dim']
+        dim = params['dim']
         rnn_drop = params.get('rnn_drop', 0.0)
+        lin_drop = params.get('lin_drop', 0.0)
+        num_layers = params.get('num_layers', 1)
+        num_linear = params.get('num_linear', 0)
 
         # Layers
-        self.embed = nn.Embedding(self.vocab_size, emb_dim)
-        self.rnn = nn.GRU(emb_dim, rnn_dim, bidirectional = True,
-            num_layers = 3, dropout = rnn_drop)
-        self.out = nn.Linear(2 * rnn_dim, 1)
+        self.embed = nn.Embedding(self.vocab_size, dim // 4)
+        self.rnn = nn.GRU(dim // 4, dim // 2, bidirectional = True,
+            num_layers = num_layers, dropout = rnn_drop)
+        self.drops = nn.ModuleList([nn.Dropout(lin_drop) 
+            for _ in range(num_linear)])
+        self.norms = nn.ModuleList([nn.BatchNorm1d(dim)
+            for _ in range(num_linear)])
+        self.lins = nn.ModuleList([nn.Linear(dim, dim) 
+            for _ in range(num_linear)])
+        self.out = nn.Linear(dim, 1)
 
         self.initialise()
 
     def initialise(self):
-        for param in self.rnn.parameters():
+        lin_params = [lin.weight for lin in self.lins]
+        for param in lin_params:
+            init.kaiming_normal_(param)
+        rnn_params = self.rnn.parameters()
+        for param in rnn_params:
             if len(param.shape) >= 2:
                 init.orthogonal_(param.data)
             else:
@@ -45,6 +57,12 @@ class SyllableCounter(BaseModel):
     def forward(self, x):
         x = self.embed(x)
         x, _ = self.rnn(x)
+        for idx in range(len(self.lins)):
+            x = self.drops[idx](x)
+            x = self.norms[idx](x.permute(1, 2, 0)).permute(2, 0, 1)
+            prior = x
+            x = F.relu(self.lins[idx](x))
+            x = torch.sum(torch.stack([prior, x], dim = 0), dim = 0)
         x = torch.sigmoid(self.out(x))
         return x.squeeze()
 
@@ -76,9 +94,13 @@ class SyllableCounter(BaseModel):
                     probs = torch.tensor([0])
                 else:
                     probs = self.forward(self.word2bits(word))
+                syl_seq = probs > pred_threshold
+                if len(syl_seq.shape) == 0:
+                    syl_seq = syl_seq.unsqueeze(0)
                 if return_syls:
-                    syl_seq = probs > pred_threshold
-                    num_syls += torch.sum(syl_seq).int().item()
+                    num_syls += torch.sum(probs).item()
+                    num_syls += 0.1 * sum(syl_seq) - 0.1 * sum(~syl_seq)
+                    num_syls = int(np.around(num_syls))
                 if return_confidence:
                     confidence *= torch.prod(probs[syl_seq])
                     confidence *= torch.prod(1 - probs[~syl_seq])
@@ -191,7 +213,7 @@ def load_model(name = 'counter'):
     from pathlib import Path
 
     # Get the checkpoint path
-    paths = list(Path('.').glob(f'{name}*.pt'))
+    paths = list(Path('.').glob('{}*.pt'.format(name)))
     if len(paths) > 1:
         print('Multiple models found:')
         for idx, path in enumerate(paths):
@@ -226,7 +248,7 @@ def load(name = 'counter', **params):
         smoothing = smoothing)
 
     # Get the checkpoint path
-    paths = list(Path('.').glob(f'{name}*.pt'))
+    paths = list(Path('.').glob('{}*.pt'.format(name)))
     if len(paths) > 1:
         print('Multiple models found:')
         for idx, path in enumerate(paths):
@@ -254,9 +276,9 @@ def load(name = 'counter', **params):
     except Exception as e:
         if idx is not None:
             print('Exception happened in trying to load checkpoint:')
-            print(f'\tType: {type(e)}')
-            print(f'\tDescription: {type(e).__doc__}')
-            print(f'\tParameters: {e}')
+            print('\tType: {}'.format(type(e)))
+            print('\tDescription: {}'.format(type(e).__doc__))
+            print('\tParameters: {}'.format(e))
             print('Ignoring it and training a fresh model')
 
         counter = SyllableCounter(**params)
@@ -285,14 +307,11 @@ def bce_rmse(pred, target, pos_weight = 1, smoothing = 0.0, epsilon = 1e-12):
         The average of the character-wise binary crossentropy and the
         word-wise root mean squared error
     '''
+    target = target * (1 - smoothing) + (1 - target) * smoothing
     loss_pos = target * torch.log(pred + epsilon)
-    loss_pos *= target - smoothing
-    loss_pos *= pos_weight
-
     loss_neg = (1 - target) * torch.log(1 - pred + epsilon)
-    loss_neg *= 1 - target + smoothing
 
-    bce = torch.mean(torch.neg(loss_pos + loss_neg))
+    bce = torch.mean(torch.neg(pos_weight * loss_pos + loss_neg))
     mse = (torch.sum(pred, dim = 0) - torch.sum(target, dim = 0)) ** 2
     rmse = torch.mean(torch.sqrt(mse + epsilon))
     return (bce + rmse) / 2
@@ -311,43 +330,40 @@ if __name__ == '__main__':
 
     # Hyperparameters
     hparams = {
-        'emb_dim': 50,
-        'rnn_dim': 128,
-        'rnn_drop': 0.5,
-        'batch_size': 16,
+        'dim': 256,
+        'num_layers': 3,
+        'num_linear': 2,
+        'rnn_drop': 0.1,
+        'lin_drop': 0.5,
+        'batch_size': 32,
         'learning_rate': 3e-4,
-        'decay': (5, 0.8), 
+        'decay': (5, 0.5), 
         'pos_weight': 1.2,
         'smoothing': 0.1,
         'verbose': 0,
         'monitor': 'val_acc',
-        'patience': 9,
-        'ema': 0.9995, # With batch size 16 this averages over 32,000 samples
-        'ema_bias': 400
+        'patience': np.inf,
+        'ema': 0.999, # With batch size 32 this averages over 32,000 samples
+        'ema_bias': 200
         }
 
-    for rnn_drop in [0.5, 0.4, 0.3, 0.2, 0.1, 0.0]:
-        hparams['rnn_drop'] = rnn_drop
+    # Get data
+    train_dl, val_dl, dparams = get_data(file_name = 'gutsyls', 
+        batch_size = hparams['batch_size'])
 
-        print(f'\nNOW TESTING RNN DROP = {rnn_drop}')
+    # Load model, optimizer, scheduler and loss function
+    counter, optimizer, scheduler, criterion = load(**hparams, 
+        **dparams)
 
-        # Get data
-        train_dl, val_dl, dparams = get_data(file_name = 'gutsyls', 
-            batch_size = hparams['batch_size'])
+    # Train the model
+    counter.fit(train_dl, val_dl, criterion = criterion,
+        optimizer = optimizer, scheduler = scheduler, 
+        monitor = hparams['monitor'], patience = hparams['patience'],
+        ema = hparams['ema'], ema_bias = hparams['ema_bias'])
 
-        # Load model, optimizer, scheduler and loss function
-        counter, optimizer, scheduler, criterion = load(**hparams, 
-            **dparams)
-
-        # Train the model
-        counter.fit(train_dl, val_dl, criterion = criterion,
-            optimizer = optimizer, scheduler = scheduler, 
-            monitor = hparams['monitor'], patience = hparams['patience'],
-            ema = hparams['ema'], ema_bias = hparams['ema_bias'])
-
-        # Print report and plots
-        counter.report(val_dl)
-        counter.report(train_dl)
-        #counter.plot(metrics = {'acc', 'val_acc'})
-        #counter.plot(metrics = {'val_f1', 'val_prec', 'val_rec'})
-        #counter.plot(metrics = {'loss', 'val_loss'})
+    # Print report and plots
+    counter.report(val_dl)
+    counter.report(train_dl)
+    counter.plot(metrics = {'acc', 'val_acc'})
+    counter.plot(metrics = {'val_f1', 'val_prec', 'val_rec'})
+    counter.plot(metrics = {'loss', 'val_loss'})
