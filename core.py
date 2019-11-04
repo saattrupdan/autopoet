@@ -167,9 +167,11 @@ class BaseModel(nn.Module):
             num_train = len(train_loader) * train_loader.batch_size
             num_val = len(val_loader) * val_loader.batch_size
             num_params = self.trainable_params()
-            print(f'Training on {num_train:,d} samples and '\
-                  f'validating on {num_val:,d} samples')
-            print(f'Number of trainable parameters: {num_params:,d}')
+            print('Training on {:,d} samples and '\
+                  'validating on {:,d} samples'\
+                  .format(num_train, num_val))
+            print('Number of trainable parameters: {:,d}'\
+                .format(num_params))
 
         # Training loop
         for epoch in count(start = start_epoch):
@@ -184,9 +186,8 @@ class BaseModel(nn.Module):
             # Epoch loop
             num_samples = len(train_loader) * train_loader.batch_size
             with tqdm(total = num_samples) as epoch_pbar:
-                epoch_pbar.set_description(f'Epoch {epoch:2d}')
+                epoch_pbar.set_description('Epoch {:2d}'.format(epoch))
                 acc_loss = 0
-                syl_acc = 0
                 for xtrain, ytrain in train_loader:
 
                     # Reset the gradients
@@ -206,8 +207,12 @@ class BaseModel(nn.Module):
 
                     # Exponentially moving average of accuracy
                     yhat_pred = yhat > 0.5
+                    if len(yhat_pred.shape) == 0:
+                        yhat_pred = yhat_pred.unsqueeze(0)
                     syl_train = torch.sum(ytrain, dim = 0).float()
-                    syl_hat = torch.sum(yhat_pred, dim = 0).float()
+                    syl_hat = torch.sum(yhat, dim = 0).float()
+                    syl_hat += 0.1 * sum(yhat_pred) - 0.1 * sum(~yhat_pred)
+                    syl_hat = torch.round(syl_hat)
                     batch_acc = torch.sum(syl_train == syl_hat).float()
                     batch_acc /= ytrain.shape[1]
                     avg_acc = ema * avg_acc + (1 - ema) * batch_acc
@@ -218,8 +223,9 @@ class BaseModel(nn.Module):
                     avg_acc /= 1 - ema ** (acc_batch * ema_bias)
 
                     # Update progress bar description
-                    desc = f'Epoch {epoch:2d} - loss {avg_loss:.4f}'\
-                           f' - acc {avg_acc:.4f}'
+                    desc = 'Epoch {:2d} - loss {:.4f}'\
+                           ' - acc {:.4f}'\
+                           .format(epoch, avg_loss, avg_acc)
                     epoch_pbar.set_description(desc)
                     epoch_pbar.update(train_loader.batch_size)
 
@@ -230,31 +236,36 @@ class BaseModel(nn.Module):
                     self.eval()
 
                     val_loss = 0
-                    syl_acc = 0
+                    val_acc = 0
                     TP, TN, FP, FN = 0, 0, 0, 0
                     for xval, yval in val_loader:
-                        yhat = self.forward(xval)
+                        probs = self.forward(xval)
 
-                        val_loss += criterion(yhat, yval)
+                        val_loss += criterion(probs, yval)
 
-                        yhat = yhat > pred_threshold
                         yval = yval > pred_threshold
+                        yhat = probs > pred_threshold
+                        if len(yhat.shape) == 0:
+                            yhat = yhat.unsqueeze(0)
+
                         TP += torch.sum(yhat & yval).float()
                         TN += torch.sum(~yhat & ~yval).float()
                         FP += torch.sum(yhat & ~yval).float()
                         FN += torch.sum(~yhat & yval).float()
 
                         syl_val = torch.sum(yval, dim = 0).float()
-                        syl_hat = torch.sum(yhat, dim = 0).float()
+                        syl_hat = torch.sum(probs, dim = 0).float()
+                        syl_hat += 0.1 * sum(yhat) - 0.1 * sum(~yhat)
+                        syl_hat = torch.round(syl_hat)
                         batch_acc = torch.sum(syl_val == syl_hat).float()
                         batch_acc /= yval.shape[1]
-                        syl_acc += batch_acc
+                        val_acc += batch_acc
 
                     # Calculate average validation loss
                     val_loss /= len(val_loader)
 
                     # Calculate syllable accuracy
-                    syl_acc /= len(val_loader)
+                    val_acc /= len(val_loader)
 
                     # Calculate more scores
                     epoch_scores = self.get_scores(TP,TN,FP,FN)
@@ -269,15 +280,17 @@ class BaseModel(nn.Module):
                     self.history['val_prec'].append(val_prec)
                     self.history['val_rec'].append(val_rec)
                     self.history['val_f1'].append(val_f1)
-                    self.history['val_acc'].append(syl_acc)
+                    self.history['val_acc'].append(val_acc)
 
                     # Update progress bar description
-                    desc = f'Epoch {epoch:2d} - '\
-                           f'loss {avg_loss:.4f} - '\
-                           f'acc {avg_acc:.4f} - '\
-                           f'val_loss {val_loss:.4f} - '\
-                           f'val_acc {syl_acc:.4f} - '\
-                           f'val_f1 {val_f1:.4f}'
+                    desc = 'Epoch {:2d} - '\
+                           'loss {:.4f} - '\
+                           'acc {:.4f} - '\
+                           'val_loss {:.4f} - '\
+                           'val_acc {:.4f} - '\
+                           'val_f1 {:.4f}'\
+                           .format(epoch, avg_loss, avg_acc, 
+                                   val_loss, val_acc, val_f1)
                     epoch_pbar.set_description(desc)
 
             # Add score to learning scheduler
@@ -292,9 +305,7 @@ class BaseModel(nn.Module):
                 for p in Path('.').glob('counter*.pt'):
                     p.unlink()
 
-                self.save(f'counter_{scores[-1]:.4f}_{monitor}.pt',
-                    optimizer = optimizer, scheduler = scheduler)
-                self.save(f'data/counter_{scores[-1]:.4f}_{monitor}.pt',
+                self.save('counter_{:.4f}_{}.pt'.format(scores[-1], monitor),
                     optimizer = optimizer, scheduler = scheduler)
 
             # Stop if score has not improved for <patience> many epochs
@@ -324,26 +335,31 @@ class BaseModel(nn.Module):
             # Enable validation mode
             self.eval()
 
-            syl_acc = 0
+            acc = 0
             TP, TN, FP, FN = 0, 0, 0, 0
             for xval, yval in dataloader:
-                yhat = self.forward(xval)
+                probs = self.forward(xval)
 
-                yhat = yhat > pred_threshold
                 yval = yval > pred_threshold
+                yhat = probs > pred_threshold
+                if len(yhat.shape) == 0:
+                    yhat = yhat.unsqueeze(0)
+
                 TP += torch.sum(yhat & yval).float()
                 TN += torch.sum(~yhat & ~yval).float()
                 FP += torch.sum(yhat & ~yval).float()
                 FN += torch.sum(~yhat & yval).float()
 
                 syl_val = torch.sum(yval, dim = 0).float()
-                syl_hat = torch.sum(yhat, dim = 0).float()
+                syl_hat = torch.sum(probs, dim = 0).float()
+                syl_hat += 0.1 * sum(yhat) - 0.1 * sum(~yhat)
+                syl_hat = torch.round(syl_hat)
                 batch_acc = torch.sum(syl_val == syl_hat).float()
                 batch_acc /= yval.shape[1]
-                syl_acc += batch_acc
+                acc += batch_acc
 
             # Calculate syllable accuracy
-            syl_acc /= len(dataloader)
+            acc /= len(dataloader)
 
             # Calculate other scores
             scores = self.get_scores(TP,TN,FP,FN)
@@ -353,16 +369,129 @@ class BaseModel(nn.Module):
 
             print('\n' + '~' * 23 + '  REPORT  ' + '~' * 23)
             print('Accuracy\tPrecision\tRecall\t\tF1 score')
-            print(f'{syl_acc:.4f}\t\t{prec:.4f}\t\t{rec:.4f}\t\t{f1:.4f}')
+            print('{:.4f}\t\t{:.4f}\t\t{:.4f}\t\t{:.4f}'\
+                .format(acc, prec, rec, f1))
 
             scores = {
-                'accuracy': syl_acc, 
+                'accuracy': acc, 
                 'precision': prec, 
                 'recall': rec, 
                 'f1': f1
                 }
 
             return scores
+
+class InjectPosition(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, inputs):
+        seq_len, batch_size, hdim = inputs.shape
+
+        # (seq_len, 1)
+        pos_enc = torch.arange(seq_len, dtype = torch.float).unsqueeze(-1)
+
+        # (seq_len, 1) --> (seq_len, hdim)
+        pos_enc = pos_enc.expand(seq_len, hdim)
+
+        # (seq_len, hdim) --> (seq_len, hdim)
+        factor = 10000 ** (2 * torch.arange(hdim, dtype = torch.float) / hdim)
+        pos_enc = pos_enc / factor.unsqueeze(0)
+
+        # (seq_len, hdim) --> (seq_len, 1, hdim)
+        pos_enc = torch.sin(pos_enc).unsqueeze(1)
+
+        # (seq_len, 1, hdim) --> (seq_len, batch_size, hdim)
+        pos_enc = pos_enc.expand_as(inputs)
+
+        # Check if the encoding is correct
+        assert np.around(pos_enc[2, 0, 20], 2) == \
+               np.around(np.sin(2 / 10000 ** (40 / hdim)), 2)
+
+        # (seq_len, batch_size, hdim) + (seq_len, batch_size, hdim)
+        #   --> (seq_len, batch_size, hdim)
+        return pos_enc + inputs
+
+class AttentionEncoderBlock(nn.Module):
+    def __init__(self, idim, hdim, num_lin = 1):
+        super().__init__()
+        self.attn = SelfAttention()
+        self.attn_norm = nn.BatchNorm1d(idim)
+        self.lins = nn.ModuleList([nn.Linear(idim, hdim)])
+        for _ in range(num_lin - 1):
+            self.lins.append(nn.Linear(hdim, hdim))
+        self.lin_norm = nn.BatchNorm1d(hdim)
+        self.initialise()
+
+    def initialise(self):
+        for lin in self.lins:
+            init.kaiming_normal_(lin.weight)
+        return self
+
+    def forward(self, inputs):
+        attn = self.attn(inputs)
+        attn = torch.sum(torch.stack([attn, inputs], dim = 0), dim = 0)
+        attn = self.attn_norm(attn.permute(1, 2, 0)).permute(2, 0, 1)
+
+        x = attn
+        for lin in self.lins:
+            x = F.relu(lin(x))
+        x = torch.sum(torch.stack([x, attn], dim = 0), dim = 0)
+        x = self.lin_norm(x.permute(1, 2, 0)).permute(2, 0, 1)
+        return x
+
+class AttentionEncoder(nn.Module):
+    def __init__(self, idim, hdim, num_lin = 1, blocks = 1):
+        super().__init__()
+        self.blocks = nn.ModuleList([])
+        self.blocks.append(AttentionEncoderBlock(idim, hdim, num_lin))
+        for _ in range(blocks - 1):
+            self.blocks.append(AttentionEncoderBlock(hdim, hdim, num_lin))
+
+    def forward(self, x):
+        for block in self.blocks:
+            x = block(x)
+        return x
+
+
+class SelfAttention(nn.Module):
+    ''' Implementation of scaled dot-product self-attention, as described
+        in "Attention is All You Need" by Vaswani et al.
+
+        INPUT
+            A tensor of shape (seq_len, batch_size, hdim)
+
+        OUTPUT
+            A tensor of the same shape, obtained as follows for every batch:
+                X -> X * softmax(X * X.T / sqrt(hdim), dim = 0)
+    '''
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, inputs):
+        seq_len, batch_size, hdim = inputs.shape
+
+        # (seq_len, batch_size, hdim) --> (batch_size, seq_len, hdim)
+        inputs = inputs.permute(1, 0, 2)
+
+        # (batch_size, seq_len, hdim) x (batch_size, hdim, seq_len)
+        #   --> (batch_size, seq_len, seq_len)
+        scores = torch.bmm(inputs, inputs.transpose(1, 2))
+        scalar = torch.sqrt(torch.FloatTensor([hdim]))
+        scores = torch.div(scores, scalar)
+
+        # (batch_size, seq_len, seq_len) --> (batch_size, seq_len, seq_len)
+        weights = F.softmax(scores, dim = 1)
+
+        # Checking that the first row sums to 1
+        assert (torch.sum(weights[0, :, 0]) * 100).round() / 100 == 1
+
+        # (batch_size, seq_len, seq_len) x (batch_size, seq_len, hdim)
+        #   --> (batch_size, seq_len, hdim)
+        attn = torch.bmm(weights, inputs)
+
+        # (batch_size, seq_len, hdim) --> (seq_len, batch_size, hdim)
+        return attn.permute(1, 0, 2)
 
 class TBatchNorm(nn.Module):
     ''' A temporal batch normalisation.
