@@ -360,14 +360,14 @@ if __name__ == '__main__':
         **dparams)
 
     # Train the model
-    #counter.fit(train_dl, val_dl, criterion = criterion,
-    #    optimizer = optimizer, scheduler = scheduler, 
-    #    monitor = hparams['monitor'], patience = hparams['patience'],
-    #    ema = hparams['ema'], ema_bias = hparams['ema_bias'])
+    counter.fit(train_dl, val_dl, criterion = criterion,
+        optimizer = optimizer, scheduler = scheduler, 
+        monitor = hparams['monitor'], patience = hparams['patience'],
+        ema = hparams['ema'], ema_bias = hparams['ema_bias'])
 
     # Print report and plots
     counter.report(val_dl)
-    #counter.report(train_dl)
-    #counter.plot(metrics = {'acc', 'val_acc'})
-    #counter.plot(metrics = {'val_f1', 'val_prec', 'val_rec'})
-    #counter.plot(metrics = {'loss', 'val_loss'})
+    counter.report(train_dl)
+    counter.plot(metrics = {'acc', 'val_acc'})
+    counter.plot(metrics = {'val_f1', 'val_prec', 'val_rec'})
+    counter.plot(metrics = {'loss', 'val_loss'})
