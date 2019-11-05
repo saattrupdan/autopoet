@@ -86,7 +86,7 @@ class SyllableCounter(BaseModel):
                     doc = re.sub(abbrev, phrase, doc)
 
             # Split input into words and initialise variables
-            words = re.sub(r'[^a-z ]', '', doc.lower().strip()).split(' ')
+            words = re.sub(r'[^a-z\-\/ ]', '', doc.lower().strip()).split(' ')
             char_idx, num_syls, confidence = 0, 0, 1
             if return_sequence:
                 prob_seq = torch.zeros((sum(len(word) for word in words)))
@@ -101,8 +101,9 @@ class SyllableCounter(BaseModel):
                 if len(syl_seq.shape) == 0:
                     syl_seq = syl_seq.unsqueeze(0)
                 if return_syls:
-                    num_syls += torch.sum(probs).item()
-                    num_syls += 0.1 * sum(syl_seq) - 0.1 * sum(~syl_seq)
+                    num_syls = 0.33 * sum(probs > 0.33) + \
+                               0.33 * sum(probs > 0.50) + \
+                               0.33 * sum(probs > 0.66)
                     num_syls = int(np.around(num_syls))
                 if return_confidence:
                     confidence *= torch.prod(probs[syl_seq])
@@ -359,14 +360,14 @@ if __name__ == '__main__':
         **dparams)
 
     # Train the model
-    counter.fit(train_dl, val_dl, criterion = criterion,
-        optimizer = optimizer, scheduler = scheduler, 
-        monitor = hparams['monitor'], patience = hparams['patience'],
-        ema = hparams['ema'], ema_bias = hparams['ema_bias'])
+    #counter.fit(train_dl, val_dl, criterion = criterion,
+    #    optimizer = optimizer, scheduler = scheduler, 
+    #    monitor = hparams['monitor'], patience = hparams['patience'],
+    #    ema = hparams['ema'], ema_bias = hparams['ema_bias'])
 
     # Print report and plots
     counter.report(val_dl)
-    counter.report(train_dl)
-    counter.plot(metrics = {'acc', 'val_acc'})
-    counter.plot(metrics = {'val_f1', 'val_prec', 'val_rec'})
-    counter.plot(metrics = {'loss', 'val_loss'})
+    #counter.report(train_dl)
+    #counter.plot(metrics = {'acc', 'val_acc'})
+    #counter.plot(metrics = {'val_f1', 'val_prec', 'val_rec'})
+    #counter.plot(metrics = {'loss', 'val_loss'})

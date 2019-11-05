@@ -47,7 +47,7 @@ class BaseModel(nn.Module):
     def word2bits(self, word: str):
         bits = torch.zeros((len(word), 1), dtype = torch.long)
         for j, char in enumerate(word):
-            bits[j, 0] = self.char2idx[char]
+            bits[j, 0] = self.char2idx.get(char, 0)
         return bits
 
     def plot(self, metrics = {'val_acc', 'val_f1'}, save_to = None, 
@@ -210,8 +210,9 @@ class BaseModel(nn.Module):
                     if len(yhat_pred.shape) == 0:
                         yhat_pred = yhat_pred.unsqueeze(0)
                     syl_train = torch.sum(ytrain, dim = 0).float()
-                    syl_hat = torch.sum(yhat, dim = 0).float()
-                    syl_hat += 0.1 * sum(yhat_pred) - 0.1 * sum(~yhat_pred)
+                    syl_hat = 0.33 * sum(probs > 0.33) + \
+                              0.33 * sum(probs > 0.50) + \
+                              0.33 * sum(probs > 0.66)
                     syl_hat = torch.round(syl_hat)
                     batch_acc = torch.sum(syl_train == syl_hat).float()
                     batch_acc /= ytrain.shape[1]
@@ -253,10 +254,11 @@ class BaseModel(nn.Module):
                         FP += torch.sum(yhat & ~yval).float()
                         FN += torch.sum(~yhat & yval).float()
 
-                        syl_val = torch.sum(yval, dim = 0).float()
-                        syl_hat = torch.sum(probs, dim = 0).float()
-                        syl_hat += 0.1 * sum(yhat) - 0.1 * sum(~yhat)
+                        syl_hat = 0.33 * sum(probs > 0.33) + \
+                                  0.33 * sum(probs > 0.50) + \
+                                  0.33 * sum(probs > 0.66)
                         syl_hat = torch.round(syl_hat)
+                        syl_val = torch.sum(yval, dim = 0).float()
                         batch_acc = torch.sum(syl_val == syl_hat).float()
                         batch_acc /= yval.shape[1]
                         val_acc += batch_acc
@@ -349,11 +351,12 @@ class BaseModel(nn.Module):
                 TN += torch.sum(~yhat & ~yval).float()
                 FP += torch.sum(yhat & ~yval).float()
                 FN += torch.sum(~yhat & yval).float()
-
-                syl_val = torch.sum(yval, dim = 0).float()
-                syl_hat = torch.sum(probs, dim = 0).float()
-                syl_hat += 0.1 * sum(yhat) - 0.1 * sum(~yhat)
+       
+                syl_hat = 0.33 * sum(probs > 0.33) + \
+                          0.33 * sum(probs > 0.50) + \
+                          0.33 * sum(probs > 0.66)
                 syl_hat = torch.round(syl_hat)
+                syl_val = torch.sum(yval, dim = 0).float()
                 batch_acc = torch.sum(syl_val == syl_hat).float()
                 batch_acc /= yval.shape[1]
                 acc += batch_acc
