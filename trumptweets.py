@@ -89,8 +89,8 @@ class TrumpTweets():
         self.sents = self.sents[self.sents['syllables'] > 0]
 
         # Save sentences
-        self.sents.to_csv(os.path.join('data', 'sents.tsv', 
-            index = False, sep = '\t'))
+        self.sents.to_csv(os.path.join('data', 'sents.tsv'), 
+            index = False, sep = '\t')
 
         return self
 
