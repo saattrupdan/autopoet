@@ -79,8 +79,11 @@ class SyllableCounter(BaseModel):
 
             # Unpack abbreviations
             for abbrev, phrase in self.abbrevs.items():
-                doc = re.sub(r'(^|(?<= )){}($|(?=[^a-zA-Z]))'.format(abbrev),
-                    phrase, doc)
+                if abbrev == re.sub(r'[^a-zA-Z]', '', abbrev):
+                    doc = re.sub(r'(^|(?<= )){}($|(?=[^a-zA-Z]))'\
+                        .format(abbrev), phrase, doc)
+                else:
+                    doc = re.sub(abbrev, phrase, doc)
 
             # Split input into words and initialise variables
             words = re.sub(r'[^a-z ]', '', doc.lower().strip()).split(' ')
@@ -333,7 +336,7 @@ if __name__ == '__main__':
         'dim': 256,
         'num_layers': 3,
         'num_linear': 2,
-        'rnn_drop': 0.1,
+        'rnn_drop': 0.15,
         'lin_drop': 0.5,
         'batch_size': 32,
         'learning_rate': 3e-4,
