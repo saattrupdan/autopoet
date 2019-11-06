@@ -121,7 +121,7 @@ class BaseModel(nn.Module):
     def fit(self, train_loader, val_loader, criterion, optimizer,
         scheduler = None, epochs = np.inf, monitor = 'val_loss', 
         target_value = None, patience = 10, ema = 0.99, ema_bias = 25,
-        pred_threshold = 0.5, announce = True):
+        pred_threshold = 0.5, announce = True, save_model = True):
         from tqdm import tqdm
         from itertools import count
         from pathlib import Path
@@ -305,17 +305,18 @@ class BaseModel(nn.Module):
             if score_cmp(scores[-1], best_score):
                 best_score = scores[-1]
 
-                # Delete older models
-                for p in Path('.').glob('counter*.pt'):
-                    p.unlink()
-
-                self.save('counter_{:.4f}_{}.pt'.format(scores[-1], monitor),
-                    optimizer = optimizer, scheduler = scheduler)
+                # Delete older models and save the current one
+                if save_model:
+                    for p in Path('.').glob('counter*.pt'):
+                        p.unlink()
+                    self.save(f'counter_{scores[-1]:.4f}_{monitor}.pt',
+                        optimizer = optimizer, scheduler = scheduler)
 
                 # TEMPORARY: Save to pCloud
                 model_fname = f'counter_{scores[-1]:.4f}_{monitor}.pt'
-                pcloud_dir = os.path.join('home', 'dn16382', 'pCloudDrive')
-                pcloud_model_dir = os.path.join(pcloud_dir, model_fname)
+                pcloud_dir = os.path.join('/home', 'dn16382', 'pCloudDrive')
+                autopoet_dir = os.path.join(pcloud_dir, 'autopoet')
+                pcloud_model_dir = os.path.join(autopoet_dir, model_fname)
                 self.save(pcloud_model_dir, optimizer = optimizer, 
                     scheduler = scheduler)
 
