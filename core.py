@@ -325,10 +325,14 @@ class BaseModel(nn.Module):
                 bad_epochs += 1
                 if bad_epochs > patience:
                     print('Model is not improving, stopping training.')
-                    path = next(Path('.').glob('counter*.pt'))
-                    checkpoint = torch.load(path)
-                    self.history = checkpoint['history']
-                    self.load_state_dict(checkpoint['model_state_dict'])
+
+                    # Load the best score
+                    if save_model:
+                        path = next(Path('.').glob('counter*.pt'))
+                        checkpoint = torch.load(path)
+                        self.history = checkpoint['history']
+                        self.load_state_dict(checkpoint['model_state_dict'])
+
                     break
             else:
                 bad_epochs = 0
