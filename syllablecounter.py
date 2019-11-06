@@ -87,30 +87,32 @@ class SyllableCounter(BaseModel):
 
             # Split input into words and initialise variables
             words = re.sub(r'[^a-z\-\/ ]', '', doc.lower().strip()).split(' ')
-            char_idx, num_syls, confidence = 0, 0, 1
             if return_sequence:
-                prob_seq = torch.zeros((sum(len(word) for word in words)))
+                num_chars = sum(len(word) + 1 for word in words) - 1
+                prob_seq = torch.zeros((num_chars))
 
             # Loop over words and accumulate the specified outputs
+            char_idx, num_syls, confidence = 0, 0, 1
             for word in words:
                 if re.sub(r'[^a-zA-Z]', '', word) == '':
                     probs = torch.tensor([0])
                 else:
                     probs = self.forward(self.word2bits(word))
-                syl_seq = probs > pred_threshold
-                if len(syl_seq.shape) == 0:
-                    syl_seq = syl_seq.unsqueeze(0)
+                if len(probs.shape) == 0:
+                    probs = probs.unsqueeze(0)
                 if return_syls:
-                    num_syls = 0.33 * sum(probs > 0.33) + \
-                               0.33 * sum(probs > 0.50) + \
-                               0.33 * sum(probs > 0.66)
+                    num_syls += 0.25 * sum(probs > 0.2) + \
+                                0.25 * sum(probs > 0.4) + \
+                                0.25 * sum(probs > 0.6) + \
+                                0.25 * sum(probs > 0.8)
                     num_syls = int(np.around(num_syls))
                 if return_confidence:
+                    syl_seq = probs > pred_threshold
                     confidence *= torch.prod(probs[syl_seq])
                     confidence *= torch.prod(1 - probs[~syl_seq])
                 if return_sequence:
                     prob_seq[range(char_idx, char_idx + len(word))] = probs.T
-                    char_idx += len(word)
+                    char_idx += len(word) + 1
 
             # Return the specified outputs
             out = {}
@@ -119,7 +121,7 @@ class SyllableCounter(BaseModel):
             if return_confidence:
                 out['confidence'] = np.around(confidence.item(), 2)
             if return_sequence:
-                chars = list(''.join(words))
+                chars = list(' '.join(words))
                 prob_seq = np.around(prob_seq.numpy(), 2)
                 out['probs'] = list(zip(chars, prob_seq))
             if len(out) == 1:
@@ -356,8 +358,10 @@ if __name__ == '__main__':
         batch_size = hparams['batch_size'])
 
     # Load model, optimizer, scheduler and loss function
-    counter, optimizer, scheduler, criterion = load(**hparams, 
-        **dparams)
+    counter, optimizer, scheduler, criterion = load(**hparams, **dparams)
+
+    # Print the model's architecture
+    print(counter)
 
     # Train the model
     counter.fit(train_dl, val_dl, criterion = criterion,
