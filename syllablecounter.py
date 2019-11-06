@@ -249,6 +249,8 @@ def load(name = 'counter', **params):
     from pathlib import Path
 
     lr = params.get('learning_rate', 3e-4)
+    fst_moment = params.get('fst_moment', 0.9)
+    snd_moment = params.get('snd_moment', 0.999)
     decay_step = params.get('decay_step', 5)
     decay_rate = params.get('decay_rate', 0.5)
     pos_weight = params.get('pos_weight', 1)
@@ -275,7 +277,8 @@ def load(name = 'counter', **params):
         checkpoint = torch.load(paths[idx])
 
         counter = SyllableCounter(**checkpoint['params'])
-        optimizer = optim.Adam(counter.parameters(), lr = lr)
+        optimizer = optim.Adam(counter.parameters(), lr = lr,
+            betas = (fst_moment, snd_moment))
         scheduler = optim.lr_scheduler.StepLR(optimizer, 
             step_size = decay_step, gamma = decay_rate)
 
@@ -293,7 +296,8 @@ def load(name = 'counter', **params):
             print('Ignoring it and training a fresh model')
 
         counter = SyllableCounter(**params)
-        optimizer = optim.Adam(counter.parameters(), lr = lr)
+        optimizer = optim.Adam(counter.parameters(), lr = lr,
+            betas = (fst_moment, snd_moment))
         scheduler = optim.lr_scheduler.StepLR(optimizer, 
             step_size = decay_step, gamma = decay_rate)
 
@@ -340,18 +344,17 @@ def bce_rmse(pred, target, pos_weight = 1, smoothing = 0.0, epsilon = 1e-12):
 if __name__ == '__main__':
     from pprint import pprint
 
-    def loguniform(low, high, eps = 1e-20):
-        return np.exp(np.random.uniform(np.log(low + eps), np.log(high)))
-
     while True:
         hparams = {
-            'dim': int(np.random.choice(np.arange(200, 400, 2))),
+            'dim': 2 * np.random.binomial(256, 0.5),
             'num_layers': int(np.random.choice([2, 3, 4])),
             'num_linear': int(np.random.choice([1, 2, 3])),
             'rnn_drop': np.random.normal(0.2, 0.1),
             'lin_drop': np.random.normal(0.5, 0.2),
             'batch_size': int(np.random.choice([8, 16, 32, 64])),
-            'learning_rate': loguniform(1e-5, 1e-2),
+            'fst_moment': 1 - np.exp(np.random.normal(np.log(1 - 0.9), 1)),
+            'snd_moment': 1 - np.exp(np.random.normal(np.log(1 - 0.999), 2)),
+            'learning_rate': np.exp(np.random.normal(np.log(3e-4), 1)),
             'decay_step': np.random.choice(np.arange(5, 11)),
             'decay_rate': np.random.normal(0.5, 0.2),
             'pos_weight': np.random.normal(1.2, 0.1),
@@ -380,7 +383,8 @@ if __name__ == '__main__':
         counter.fit(train_dl, val_dl, criterion = criterion,
             optimizer = optimizer, scheduler = scheduler, 
             monitor = hparams['monitor'], patience = hparams['patience'],
-            ema = hparams['ema'], ema_bias = hparams['ema_bias'])
+            ema = hparams['ema'], ema_bias = hparams['ema_bias'],
+            save_model = False)
 
         # Print report and plots
         #counter.report(val_dl)
