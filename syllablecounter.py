@@ -5,7 +5,7 @@ from torch import optim
 from torch.nn import init
 from torch.nn import functional as F
 from torch.utils import data
-from core import BaseModel, SelfAttention
+from core import BaseModel 
 
 class SyllableCounter(BaseModel):
     ''' Model that finds beginnings of syllables in a single English word.
@@ -144,6 +144,10 @@ class BatchWrapper:
         for batch in self.dl:
             yield (batch.word, batch.syl_seq)
 
+    def __next__(self):
+        for batch in self.dl:
+            yield (batch.word, batch.syl_seq)
+
     def __len__(self):
         return len(self.dl)
 
@@ -163,6 +167,7 @@ def get_data(file_name, batch_size = 32, split_ratio = 0.99):
     '''
     from torchtext.data import Field, TabularDataset, BucketIterator
     import random
+    import os
 
     # Define fields in dataset
     TXT = Field(tokenize = lambda x: list(x), lower = True)
@@ -176,7 +181,7 @@ def get_data(file_name, batch_size = 32, split_ratio = 0.99):
     # Load in dataset, applying the preprocessing and tokenisation as
     # described in the fields
     dataset = TabularDataset(
-        path = 'data/{}.tsv'.format(file_name),
+        path = os.path.join('data', '{}.tsv'.format(file_name)),
         format = 'tsv', 
         skip_header = True,
         fields = datafields
@@ -244,8 +249,8 @@ def load(name = 'counter', **params):
     from pathlib import Path
 
     lr = params.get('learning_rate', 3e-4)
-    step_size = params.get('decay', (10, 1.0))[0]
-    gamma = params.get('decay', (10, 1.0))[1]
+    decay_step = params.get('decay_step', 5)
+    decay_rate = params.get('decay_rate', 0.5)
     pos_weight = params.get('pos_weight', 1)
     smoothing = params.get('smoothing', 0.0)
 
@@ -272,7 +277,7 @@ def load(name = 'counter', **params):
         counter = SyllableCounter(**checkpoint['params'])
         optimizer = optim.Adam(counter.parameters(), lr = lr)
         scheduler = optim.lr_scheduler.StepLR(optimizer, 
-            step_size = step_size, gamma = gamma)
+            step_size = decay_step, gamma = decay_rate)
 
         counter.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -290,7 +295,7 @@ def load(name = 'counter', **params):
         counter = SyllableCounter(**params)
         optimizer = optim.Adam(counter.parameters(), lr = lr)
         scheduler = optim.lr_scheduler.StepLR(optimizer, 
-            step_size = step_size, gamma = gamma)
+            step_size = decay_step, gamma = decay_rate)
 
     return counter, optimizer, scheduler, criterion
 
@@ -333,45 +338,54 @@ def bce_rmse(pred, target, pos_weight = 1, smoothing = 0.0, epsilon = 1e-12):
 
 
 if __name__ == '__main__':
+    from pprint import pprint
 
-    # Hyperparameters
-    hparams = {
-        'dim': 256,
-        'num_layers': 3,
-        'num_linear': 2,
-        'rnn_drop': 0.15,
-        'lin_drop': 0.5,
-        'batch_size': 32,
-        'learning_rate': 3e-4,
-        'decay': (5, 0.5), 
-        'pos_weight': 1.2,
-        'smoothing': 0.1,
-        'verbose': 0,
-        'monitor': 'val_acc',
-        'patience': np.inf,
-        'ema': 0.999, # With batch size 32 this averages over 32,000 samples
-        'ema_bias': 200
-        }
+    def loguniform(low, high, eps = 1e-20):
+        return np.exp(np.random.uniform(np.log(low + eps), np.log(high)))
 
-    # Get data
-    train_dl, val_dl, dparams = get_data(file_name = 'gutsyls', 
-        batch_size = hparams['batch_size'])
+    while True:
 
-    # Load model, optimizer, scheduler and loss function
-    counter, optimizer, scheduler, criterion = load(**hparams, **dparams)
+        hparams = {
+            'dim': int(np.random.choice(np.arange(200, 400, 2))),
+            'num_layers': int(np.random.choice([2, 3, 4])),
+            'num_linear': int(np.random.choice([1, 2, 3])),
+            'rnn_drop': np.random.normal(0.2, 0.1),
+            'lin_drop': np.random.normal(0.5, 0.2),
+            'batch_size': int(np.random.choice([8, 16, 32, 64])),
+            'learning_rate': loguniform(1e-5, 1e-2),
+            'decay_step': np.random.choice(np.arange(5, 11)),
+            'decay_rate': np.random.normal(0.5, 0.2),
+            'pos_weight': np.random.normal(1.2, 0.1),
+            'smoothing': np.random.normal(0.1, 0.02),
+            'verbose': 0,
+            'monitor': 'val_acc',
+            'patience': 9,
+            'ema': 0.999, 
+            'ema_bias': 200
+            }
 
-    # Print the model's architecture
-    print(counter)
+        # Display choice of hyperparameters
+        pprint(hparams)
 
-    # Train the model
-    counter.fit(train_dl, val_dl, criterion = criterion,
-        optimizer = optimizer, scheduler = scheduler, 
-        monitor = hparams['monitor'], patience = hparams['patience'],
-        ema = hparams['ema'], ema_bias = hparams['ema_bias'])
+        # Get data
+        train_dl, val_dl, dparams = get_data(file_name = 'gutsyls', 
+            batch_size = hparams['batch_size'])
 
-    # Print report and plots
-    counter.report(val_dl)
-    counter.report(train_dl)
-    counter.plot(metrics = {'acc', 'val_acc'})
-    counter.plot(metrics = {'val_f1', 'val_prec', 'val_rec'})
-    counter.plot(metrics = {'loss', 'val_loss'})
+        # Load model, optimizer, scheduler and loss function
+        counter, optimizer, scheduler, criterion = load(**hparams, **dparams)
+
+        # Print the model's architecture
+        print(counter)
+
+        # Train the model
+        counter.fit(train_dl, val_dl, criterion = criterion,
+            optimizer = optimizer, scheduler = scheduler, 
+            monitor = hparams['monitor'], patience = hparams['patience'],
+            ema = hparams['ema'], ema_bias = hparams['ema_bias'])
+
+        # Print report and plots
+        counter.report(val_dl)
+        counter.report(train_dl)
+        counter.plot(metrics = {'acc', 'val_acc'})
+        counter.plot(metrics = {'val_f1', 'val_prec', 'val_rec'})
+        counter.plot(metrics = {'loss', 'val_loss'})
