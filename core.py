@@ -126,6 +126,7 @@ class BaseModel(nn.Module):
         from itertools import count
         from pathlib import Path
         from functools import cmp_to_key
+        import os
 
         if self.history is None:
             self.history = {
@@ -310,6 +311,13 @@ class BaseModel(nn.Module):
 
                 self.save('counter_{:.4f}_{}.pt'.format(scores[-1], monitor),
                     optimizer = optimizer, scheduler = scheduler)
+
+                # TEMPORARY: Save to pCloud
+                model_fname = f'counter_{scores[-1]:.4f}_{monitor}.pt'
+                pcloud_dir = os.path.join('home', 'dn16382', 'pCloudDrive')
+                pcloud_model_dir = os.path.join(pcloud_dir, model_fname)
+                self.save(pcloud_model_dir, optimizer = optimizer, 
+                    scheduler = scheduler)
 
             # Stop if score has not improved for <patience> many epochs
             if score_cmp(best_score, scores[-1]):

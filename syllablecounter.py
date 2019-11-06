@@ -344,7 +344,6 @@ if __name__ == '__main__':
         return np.exp(np.random.uniform(np.log(low + eps), np.log(high)))
 
     while True:
-
         hparams = {
             'dim': int(np.random.choice(np.arange(200, 400, 2))),
             'num_layers': int(np.random.choice([2, 3, 4])),
@@ -384,8 +383,8 @@ if __name__ == '__main__':
             ema = hparams['ema'], ema_bias = hparams['ema_bias'])
 
         # Print report and plots
-        counter.report(val_dl)
-        counter.report(train_dl)
-        counter.plot(metrics = {'acc', 'val_acc'})
-        counter.plot(metrics = {'val_f1', 'val_prec', 'val_rec'})
-        counter.plot(metrics = {'loss', 'val_loss'})
+        #counter.report(val_dl)
+        #counter.report(train_dl)
+        #counter.plot(metrics = {'acc', 'val_acc'})
+        #counter.plot(metrics = {'val_f1', 'val_prec', 'val_rec'})
+        #counter.plot(metrics = {'loss', 'val_loss'})
