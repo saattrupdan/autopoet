@@ -195,6 +195,8 @@ class BaseModel(nn.Module):
 
                     # Do a forward pass, calculate loss and backpropagate
                     yhat = self.forward(xtrain)
+                    if len(yhat.shape) == 0:
+                        yhat = yhat.unsqueeze(0)
                     loss = criterion(yhat, ytrain)
                     loss.backward()
                     optimizer.step()
@@ -206,14 +208,12 @@ class BaseModel(nn.Module):
                     avg_loss = ema * avg_loss + (1 - ema) * float(loss)
 
                     # Exponentially moving average of accuracy
-                    yhat_pred = yhat > 0.5
-                    if len(yhat_pred.shape) == 0:
-                        yhat_pred = yhat_pred.unsqueeze(0)
-                    syl_train = torch.sum(ytrain, dim = 0).float()
-                    syl_hat = 0.33 * sum(probs > 0.33) + \
-                              0.33 * sum(probs > 0.50) + \
-                              0.33 * sum(probs > 0.66)
+                    syl_hat = 0.25 * sum(yhat > 0.2) + \
+                              0.25 * sum(yhat > 0.4) + \
+                              0.25 * sum(yhat > 0.6) + \
+                              0.25 * sum(yhat > 0.8)
                     syl_hat = torch.round(syl_hat)
+                    syl_train = torch.sum(ytrain, dim = 0).float()
                     batch_acc = torch.sum(syl_train == syl_hat).float()
                     batch_acc /= ytrain.shape[1]
                     avg_acc = ema * avg_acc + (1 - ema) * batch_acc
@@ -241,22 +241,23 @@ class BaseModel(nn.Module):
                     TP, TN, FP, FN = 0, 0, 0, 0
                     for xval, yval in val_loader:
                         probs = self.forward(xval)
+                        if len(probs.shape) == 0:
+                            probs= probs.unsqueeze(0)
 
                         val_loss += criterion(probs, yval)
 
                         yval = yval > pred_threshold
                         yhat = probs > pred_threshold
-                        if len(yhat.shape) == 0:
-                            yhat = yhat.unsqueeze(0)
 
                         TP += torch.sum(yhat & yval).float()
                         TN += torch.sum(~yhat & ~yval).float()
                         FP += torch.sum(yhat & ~yval).float()
                         FN += torch.sum(~yhat & yval).float()
 
-                        syl_hat = 0.33 * sum(probs > 0.33) + \
-                                  0.33 * sum(probs > 0.50) + \
-                                  0.33 * sum(probs > 0.66)
+                        syl_hat = 0.25 * sum(probs > 0.2) + \
+                                  0.25 * sum(probs > 0.4) + \
+                                  0.25 * sum(probs > 0.6) + \
+                                  0.25 * sum(probs > 0.8)
                         syl_hat = torch.round(syl_hat)
                         syl_val = torch.sum(yval, dim = 0).float()
                         batch_acc = torch.sum(syl_val == syl_hat).float()
@@ -352,9 +353,10 @@ class BaseModel(nn.Module):
                 FP += torch.sum(yhat & ~yval).float()
                 FN += torch.sum(~yhat & yval).float()
        
-                syl_hat = 0.33 * sum(probs > 0.33) + \
-                          0.33 * sum(probs > 0.50) + \
-                          0.33 * sum(probs > 0.66)
+                syl_hat = 0.25 * sum(probs > 0.2) + \
+                          0.25 * sum(probs > 0.4) + \
+                          0.25 * sum(probs > 0.6) + \
+                          0.25 * sum(probs > 0.8)
                 syl_hat = torch.round(syl_hat)
                 syl_val = torch.sum(yval, dim = 0).float()
                 batch_acc = torch.sum(syl_val == syl_hat).float()
