@@ -322,7 +322,7 @@ def bce_rmse(pred, target, pos_weight = 1, smoothing = 0.0, epsilon = 1e-12):
         The average of the character-wise binary crossentropy and the
         word-wise root mean squared error
     '''
-    target = target * (1 - smoothing) + (1 - target) * smoothing
+    target = target * (1 - smoothing)
     loss_pos = target * torch.log(pred + epsilon)
     loss_neg = (1 - target) * torch.log(1 - pred + epsilon)
 
