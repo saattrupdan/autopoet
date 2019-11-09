@@ -314,7 +314,7 @@ class BaseModel(nn.Module):
 
                 # TEMPORARY: Save to pCloud
                 model_fname = f'counter_{scores[-1]:.4f}_{monitor}.pt'
-                pcloud_dir = os.path.join('/home', 'dn16382', 'pCloudDrive')
+                pcloud_dir = os.path.join('/home', 'leidem', 'pCloudDrive')
                 autopoet_dir = os.path.join(pcloud_dir, 'autopoet')
                 pcloud_model_dir = os.path.join(autopoet_dir, model_fname)
                 self.save(pcloud_model_dir, optimizer = optimizer, 
