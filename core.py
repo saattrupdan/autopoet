@@ -212,6 +212,7 @@ class BaseModel(nn.Module):
                     syl_hat = yhat - torch.min(yhat, dim = 0)[0]
                     syl_hat /= torch.max(syl_hat, dim = 0)[0]
                     syl_hat = torch.round(torch.sum(syl_hat, dim = 0))
+                    syl_hat[torch.isnan(syl_hat)] = 1
                     syl_train = torch.sum(ytrain, dim = 0).float()
                     batch_acc = torch.sum(syl_train == syl_hat).float()
                     batch_acc /= ytrain.shape[1]
@@ -256,6 +257,7 @@ class BaseModel(nn.Module):
                         syl_hat = probs - torch.min(probs, dim = 0)[0]
                         syl_hat /= torch.max(syl_hat, dim = 0)[0]
                         syl_hat = torch.round(torch.sum(syl_hat, dim = 0))
+                        syl_hat[torch.isnan(syl_hat)] = 1
                         syl_val = torch.sum(yval, dim = 0).float()
                         batch_acc = torch.sum(syl_val == syl_hat).float()
                         batch_acc /= yval.shape[1]
