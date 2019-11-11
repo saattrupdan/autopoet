@@ -101,9 +101,16 @@ class SyllableCounter(BaseModel):
                 if len(probs.shape) == 0:
                     probs = probs.unsqueeze(0)
                 if return_syls:
-                    syl_hat = probs - torch.min(probs, dim = 0)
-                    syl_hat /= torch.max(syl_hat, dim = 0)
+                    syl_hat = probs - torch.min(probs, dim = 0)[0]
+                    syl_hat /= torch.max(syl_hat, dim = 0)[0]
                     syl_hat = torch.sum(syl_hat, dim = 0)
+
+                    # If there aren't two distinct probabilities in probs
+                    # then syl_hat will now have NaN values --- in this case
+                    # we simply replace it with a single syllable
+                    if torch.isnan(syl_hat):
+                        syl_hat = 1
+
                     num_syls += syl_hat
                 if return_confidence:
                     syl_seq = probs > pred_threshold
