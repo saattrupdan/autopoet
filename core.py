@@ -253,7 +253,7 @@ class BaseModel(nn.Module):
                         FP += torch.sum(yhat & ~yval).float()
                         FN += torch.sum(~yhat & yval).float()
 
-                        syl_hat = yhat - torch.min(yhat, dim = 0)[0]
+                        syl_hat = probs - torch.min(probs, dim = 0)[0]
                         syl_hat /= torch.max(syl_hat, dim = 0)[0]
                         syl_hat = torch.round(torch.sum(syl_hat, dim = 0))
                         syl_val = torch.sum(yval, dim = 0).float()
