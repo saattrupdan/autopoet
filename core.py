@@ -209,10 +209,7 @@ class BaseModel(nn.Module):
                     avg_loss = ema * avg_loss + (1 - ema) * float(loss)
 
                     # Exponentially moving average of accuracy
-                    syl_hat = yhat - torch.min(yhat, dim = 0)[0]
-                    syl_hat /= torch.max(syl_hat, dim = 0)[0]
-                    syl_hat = torch.round(torch.sum(syl_hat, dim = 0))
-                    syl_hat[torch.isnan(syl_hat)] = 1
+                    syl_hat = torch.round(torch.sum(yhat, dim = 0))
                     syl_train = torch.sum(ytrain, dim = 0).float()
                     batch_acc = torch.sum(syl_train == syl_hat).float()
                     batch_acc /= ytrain.shape[1]
@@ -224,8 +221,7 @@ class BaseModel(nn.Module):
                     avg_acc /= 1 - ema ** (acc_batch * ema_bias)
 
                     # Update progress bar description
-                    desc = 'Epoch {:2d} - loss {:.4f}'\
-                           ' - acc {:.4f}'\
+                    desc = 'Epoch {:2d} - loss {:.4f} - acc {:.4f}'\
                            .format(epoch, avg_loss, avg_acc)
                     epoch_pbar.set_description(desc)
                     epoch_pbar.update(train_loader.batch_size)
@@ -254,10 +250,7 @@ class BaseModel(nn.Module):
                         FP += torch.sum(yhat & ~yval).float()
                         FN += torch.sum(~yhat & yval).float()
 
-                        syl_hat = probs - torch.min(probs, dim = 0)[0]
-                        syl_hat /= torch.max(syl_hat, dim = 0)[0]
-                        syl_hat = torch.round(torch.sum(syl_hat, dim = 0))
-                        syl_hat[torch.isnan(syl_hat)] = 1
+                        syl_hat = torch.round(torch.sum(probs, dim = 0))
                         syl_val = torch.sum(yval, dim = 0).float()
                         batch_acc = torch.sum(syl_val == syl_hat).float()
                         batch_acc /= yval.shape[1]

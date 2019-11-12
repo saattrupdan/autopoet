@@ -101,11 +101,7 @@ class SyllableCounter(BaseModel):
                 if len(probs.shape) == 0:
                     probs = probs.unsqueeze(0)
                 if return_syls:
-                    syl_hat = probs - torch.min(probs, dim = 0)[0]
-                    syl_hat /= torch.max(syl_hat, dim = 0)[0]
-                    syl_hat = torch.sum(syl_hat, dim = 0)
-                    syl_hat[torch.isnan(syl_hat)] = 1
-                    num_syls += syl_hat
+                    num_syls += torch.sum(probs, dim = 0)
                 if return_confidence:
                     syl_seq = probs > pred_threshold
                     confidence *= torch.prod(probs[syl_seq])
@@ -254,11 +250,9 @@ def load(name = 'counter', **params):
     decay_step = params.get('decay_step', 5)
     decay_rate = params.get('decay_rate', 0.5)
     pos_weight = params.get('pos_weight', 1)
-    smoothing = params.get('smoothing', 0.0)
 
     # Build loss function
-    criterion = partial(bce_rmse, pos_weight = pos_weight, 
-        smoothing = smoothing)
+    criterion = partial(bce_rmse, pos_weight = pos_weight)
 
     # Get the checkpoint path
     paths = list(Path('.').glob('{}*.pt'.format(name)))
@@ -303,7 +297,7 @@ def load(name = 'counter', **params):
 
     return counter, optimizer, scheduler, criterion
 
-def bce_rmse(pred, target, pos_weight = 1, smoothing = 0.0, epsilon = 1e-12):
+def bce_rmse(pred, target, pos_weight = 1, epsilon = 1e-12):
     ''' A combination of binary crossentropy and root mean squared error.
 
     INPUT
@@ -313,8 +307,6 @@ def bce_rmse(pred, target, pos_weight = 1, smoothing = 0.0, epsilon = 1e-12):
             A 1-dimensional tensor containing true values
         pos_weight = 1
             The weight that should be given to positive examples
-        smoothing = 0.0
-            Smoothing parameter for the presence detection
         epsilon = 1e-12
             A small constant to avoid dividing by zero
 
@@ -322,7 +314,6 @@ def bce_rmse(pred, target, pos_weight = 1, smoothing = 0.0, epsilon = 1e-12):
         The average of the character-wise binary crossentropy and the
         word-wise root mean squared error
     '''
-    target = target * (1 - smoothing) + (1 - target) * smoothing
     loss_pos = target * torch.log(pred + epsilon)
     loss_neg = (1 - target) * torch.log(1 - pred + epsilon)
 
@@ -348,16 +339,15 @@ if __name__ == '__main__':
         'dim': 256,
         'num_layers': 3,
         'num_linear': 1,
-        'rnn_drop': 0.1,
+        'rnn_drop': 0.2,
         'lin_drop': 0.5,
         'batch_size': 8,
         'fst_moment': 0.99,
         'snd_moment': 0.999,
         'learning_rate': 3e-4,
-        'decay_step': 6,
+        'decay_step': 5,
         'decay_rate': 0.5,
-        'pos_weight': 1.2,
-        'smoothing': 0.1,
+        'pos_weight': 1.3,
         'verbose': 0,
         'monitor': 'val_acc',
         'patience': np.inf,
@@ -379,10 +369,10 @@ if __name__ == '__main__':
     print(counter)
 
     # Train the model
-    counter.fit(train_dl, val_dl, criterion = criterion,
-        optimizer = optimizer, scheduler = scheduler, 
-        monitor = hparams['monitor'], patience = hparams['patience'],
-        ema = hparams['ema'], ema_bias = hparams['ema_bias'])
+    #counter.fit(train_dl, val_dl, criterion = criterion,
+    #    optimizer = optimizer, scheduler = scheduler, 
+    #    monitor = hparams['monitor'], patience = hparams['patience'],
+    #    ema = hparams['ema'], ema_bias = hparams['ema_bias'])
 
     # Print report and plots
     counter.report(val_dl)
