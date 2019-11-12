@@ -92,7 +92,7 @@ class SyllableCounter(BaseModel):
                 prob_seq = torch.zeros((num_chars))
 
             # Loop over words and accumulate the specified outputs
-            char_idx, num_syls, confidence = 0, 0, 1
+            char_idx, num_syls, confidence = 0, 0., 1.
             for word in words:
                 if re.sub(r'[^a-zA-Z]', '', word) == '':
                     probs = torch.tensor([0])
@@ -101,7 +101,7 @@ class SyllableCounter(BaseModel):
                 if len(probs.shape) == 0:
                     probs = probs.unsqueeze(0)
                 if return_syls:
-                    num_syls += torch.sum(probs, dim = 0)
+                    num_syls += torch.sum(probs, dim = 0).float()
                 if return_confidence:
                     syl_seq = probs > pred_threshold
                     confidence *= torch.prod(probs[syl_seq])

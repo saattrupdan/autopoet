@@ -209,7 +209,7 @@ class BaseModel(nn.Module):
                     avg_loss = ema * avg_loss + (1 - ema) * float(loss)
 
                     # Exponentially moving average of accuracy
-                    syl_hat = torch.round(torch.sum(yhat, dim = 0))
+                    syl_hat = torch.round(torch.sum(yhat, dim = 0).float())
                     syl_train = torch.sum(ytrain, dim = 0).float()
                     batch_acc = torch.sum(syl_train == syl_hat).float()
                     batch_acc /= ytrain.shape[1]
@@ -232,8 +232,8 @@ class BaseModel(nn.Module):
                     # Enable validation mode
                     self.eval()
 
-                    val_loss = 0
-                    val_acc = 0
+                    val_loss = 0.
+                    val_acc = 0.
                     TP, TN, FP, FN = 0, 0, 0, 0
                     for xval, yval in val_loader:
                         probs = self.forward(xval)
@@ -250,7 +250,8 @@ class BaseModel(nn.Module):
                         FP += torch.sum(yhat & ~yval).float()
                         FN += torch.sum(~yhat & yval).float()
 
-                        syl_hat = torch.round(torch.sum(probs, dim = 0))
+                        syl_hat = torch.sum(probs, dim = 0).float()
+                        syl_hat = torch.round(syl_hat)
                         syl_val = torch.sum(yval, dim = 0).float()
                         batch_acc = torch.sum(syl_val == syl_hat).float()
                         batch_acc /= yval.shape[1]
