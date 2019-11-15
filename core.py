@@ -209,11 +209,7 @@ class BaseModel(nn.Module):
                     avg_loss = ema * avg_loss + (1 - ema) * float(loss)
 
                     # Exponentially moving average of accuracy
-                    syl_hat = 0.25 * sum(yhat > 0.2) + \
-                              0.25 * sum(yhat > 0.4) + \
-                              0.25 * sum(yhat > 0.6) + \
-                              0.25 * sum(yhat > 0.8)
-                    syl_hat = torch.round(syl_hat)
+                    syl_hat = torch.round(torch.sum(yhat, dim = 0).float())
                     syl_train = torch.sum(ytrain, dim = 0).float()
                     batch_acc = torch.sum(syl_train == syl_hat).float()
                     batch_acc /= ytrain.shape[1]
@@ -225,8 +221,7 @@ class BaseModel(nn.Module):
                     avg_acc /= 1 - ema ** (acc_batch * ema_bias)
 
                     # Update progress bar description
-                    desc = 'Epoch {:2d} - loss {:.4f}'\
-                           ' - acc {:.4f}'\
+                    desc = 'Epoch {:2d} - loss {:.4f} - acc {:.4f}'\
                            .format(epoch, avg_loss, avg_acc)
                     epoch_pbar.set_description(desc)
                     epoch_pbar.update(train_loader.batch_size)
@@ -237,8 +232,8 @@ class BaseModel(nn.Module):
                     # Enable validation mode
                     self.eval()
 
-                    val_loss = 0
-                    val_acc = 0
+                    val_loss = 0.
+                    val_acc = 0.
                     TP, TN, FP, FN = 0, 0, 0, 0
                     for xval, yval in val_loader:
                         probs = self.forward(xval)
@@ -255,10 +250,7 @@ class BaseModel(nn.Module):
                         FP += torch.sum(yhat & ~yval).float()
                         FN += torch.sum(~yhat & yval).float()
 
-                        syl_hat = 0.25 * sum(probs > 0.2) + \
-                                  0.25 * sum(probs > 0.4) + \
-                                  0.25 * sum(probs > 0.6) + \
-                                  0.25 * sum(probs > 0.8)
+                        syl_hat = torch.sum(probs, dim = 0).float()
                         syl_hat = torch.round(syl_hat)
                         syl_val = torch.sum(yval, dim = 0).float()
                         batch_acc = torch.sum(syl_val == syl_hat).float()
@@ -312,14 +304,6 @@ class BaseModel(nn.Module):
                     self.save(f'counter_{scores[-1]:.4f}_{monitor}.pt',
                         optimizer = optimizer, scheduler = scheduler)
 
-                # TEMPORARY: Save to pCloud
-                model_fname = f'counter_{scores[-1]:.4f}_{monitor}.pt'
-                pcloud_dir = os.path.join('/home', 'leidem', 'pCloudDrive')
-                autopoet_dir = os.path.join(pcloud_dir, 'autopoet')
-                pcloud_model_dir = os.path.join(autopoet_dir, model_fname)
-                self.save(pcloud_model_dir, optimizer = optimizer, 
-                    scheduler = scheduler)
-
             # Stop if score has not improved for <patience> many epochs
             if score_cmp(best_score, scores[-1]):
                 bad_epochs += 1
@@ -365,12 +349,9 @@ class BaseModel(nn.Module):
                 TN += torch.sum(~yhat & ~yval).float()
                 FP += torch.sum(yhat & ~yval).float()
                 FN += torch.sum(~yhat & yval).float()
-       
-                syl_hat = 0.25 * sum(probs > 0.2) + \
-                          0.25 * sum(probs > 0.4) + \
-                          0.25 * sum(probs > 0.6) + \
-                          0.25 * sum(probs > 0.8)
-                syl_hat = torch.round(syl_hat)
+                
+                syl_hat = probs / torch.max(probs, dim = 0)[0]
+                syl_hat = torch.round(torch.sum(syl_hat, dim = 0))
                 syl_val = torch.sum(yval, dim = 0).float()
                 batch_acc = torch.sum(syl_val == syl_hat).float()
                 batch_acc /= yval.shape[1]

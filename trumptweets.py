@@ -13,7 +13,7 @@ class TrumpTweets():
 
         if os.path.isfile(os.path.join('data', 'sents.tsv')):
             self.sents = pd.read_csv(os.path.join('data', 'sents.tsv'), 
-                sep = '\t', dtype = {'sentences': str, 'syllables': int})
+                sep = '\t', dtype = {'sentence': str, 'syllables': int})
         else:
             self.sents = None
 
@@ -57,6 +57,7 @@ class TrumpTweets():
         import os
         import spacy
         import pandas as pd
+        import numpy as np
         from tqdm import tqdm
         from syllablecounter import load_model
 
@@ -85,8 +86,12 @@ class TrumpTweets():
             })
 
         # Remove blank sentences
-        self.sents.dropna(inplace = True)
-        self.sents = self.sents[self.sents['syllables'] > 0]
+        self.sents['syllables'] = pd.to_numeric(
+            self.sents['syllables'], 
+            errors = 'coerce' # This converts non-numerics to NaN values
+            )
+        self.sents.replace('', np.nan, inplace = True)
+        self.sents = self.sents[self.sents['syllables'] > 0].dropna()
 
         # Save sentences
         self.sents.to_csv(os.path.join('data', 'sents.tsv'), 
@@ -94,13 +99,18 @@ class TrumpTweets():
 
         return self
 
-    def rnd_phrase(self, syllables = None):
+    def rnd_phrase(self, syllables = None, include_mentions = True,
+        include_hashtags = True):
         ''' Get a random Trump phrase.
 
         INPUT
             syllables = None
                 The number of syllables in phrase. Defaults to no syllable
                 requirement
+            include_mentions = True
+                Whether to allow the phrase to have @ occurences
+            include_hashtags = True
+                Whether to allow the phrase to have # occurences
         OUTPUT
             A random Trump phrase, with first letter capitalised
         '''
@@ -109,7 +119,7 @@ class TrumpTweets():
 
         while self.sents is None:
             query = 'You have not compiled the tweets yet. '\
-                'Compile? (y/n)\n >>> '
+                'Compile? (y/n)\n>>> '
             if input(query) == 'y':
                 self.compile()
 
@@ -121,40 +131,54 @@ class TrumpTweets():
 
         try:
             phrases = list(phrases)
+
             phrase = random.choice(list(phrases))
+
+            if not include_mentions and not include_hashtags:
+                while '@' in phrase or '#' in phrase:
+                    phrase = random.choice(list(phrases))
+            elif not include_mentions:
+                while '@' in phrase:
+                    phrase = random.choice(list(phrases))
+            elif not include_hashtags:
+                while '#' in phrase:
+                    phrase = random.choice(list(phrases))
+
+            # Remove punctuation at the beginning or end of phrase
+            phrase = re.sub('[\n―]', ' ', phrase)
+            phrase = phrase.strip(' .,-… \'\"\”\“:&’_|')
 
             # Make the first letter in the phrase uppercase
             phrase = re.sub(r'^[a-z]', lambda m: m.group(0).upper(), phrase)
-
-            # Remove punctuation at the beginning or end of phrase
-            phrase = re.sub(r'([.,\-… \'\"\”]+$|^[\'\"\”.,\-… ]+)', '', phrase)
 
         except IndexError:
             phrase = f'<No phrase found with {syllables} syllables>'
 
         return phrase.strip()
 
-    def haiku(self):
+    def haiku(self, include_mentions = True, include_hashtags = True):
         ''' Get a random Trump haiku. 
+
+        INPUT
+            include_mentions = True
+                Whether to allow the phrase to have @ occurences
+            include_hashtags = True
+                Whether to allow the phrase to have # occurences
         
         OUTPUT
             Trump haiku string
         '''
-        line1 = self.rnd_phrase(5)
-        line2 = self.rnd_phrase(7)
-        line3 = self.rnd_phrase(5)
+        params = {
+            'include_mentions': include_mentions,
+            'include_hashtags': include_hashtags
+            }
+        line1 = self.rnd_phrase(5, **params)
+        line2 = self.rnd_phrase(7, **params)
+        line3 = self.rnd_phrase(5, **params)
         return line1 + '\n' + line2 + '\n' + line3
 
 if __name__ == '__main__':
-
     tt = TrumpTweets()
-    tt.compile()
-
-    print('HAIKU 1:')
-    print(tt.haiku())
-
-    print('\nHAIKU 2:')
-    print(tt.haiku())
-
-    print('\nHAIKU 3:')
-    print(tt.haiku())
+    for _ in range(3):
+        print('')
+        print(tt.haiku(include_mentions = False, include_hashtags = True))
