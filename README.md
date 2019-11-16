@@ -17,7 +17,7 @@ Build poems from text sources.
 
 A large part of this project was to develop a model that counts syllables in English words. 
 
-The syllable counter is trained on a (slightly modified version of) the [Gutenberg](https://en.wikipedia.org/wiki/Project_Gutenberg) syllable corpus, consisting of ~180,000 English words split into syllables. The `process_gutsyls` notebook converts these into a format which is more convenient for our purposes. The raw dataset can be freely downloaded [here](http://onlinebooks.library.upenn.edu/webbin/gutbook/lookup?num=3204), and the preprocessed versions used for this project can be found [here](https://filedn.com/lRBwPhPxgV74tO0rDoe8SpH/autopoet_data/).
+The syllable counter is trained on a (slightly modified version of) the [Gutenberg](https://en.wikipedia.org/wiki/Project_Gutenberg) syllable corpus, consisting of ~170,000 English words split into syllables. The `process_gutsyls` notebook converts these into a format which is more convenient for our purposes. The raw dataset can be freely downloaded [here](http://onlinebooks.library.upenn.edu/webbin/gutbook/lookup?num=3204), and the preprocessed versions used for this project can be found [here](https://filedn.com/lRBwPhPxgV74tO0rDoe8SpH/autopoet_data/).
 
 The model is a recurrent neural network that works at the character level, with the following rough architecture:
 
