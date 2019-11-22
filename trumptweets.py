@@ -35,27 +35,51 @@ class TrumpTweets():
                 with tqdm(docs) as pbar:
                     pbar.set_description(pbar_desc)
                     return list(pool.map(fn, pbar))
-        
-    def clean_doc(self, doc):
-        ''' Clean a document. '''
-        import re
-        clean_doc = re.sub('&amp;', '&', doc)
-        clean_doc = re.sub(r'-+', ' ', clean_doc)
-        clean_doc = re.sub(r'http[./:a-zA-Z0-9]+', ' ', clean_doc)
-        clean_doc = re.sub(r' +', ' ', clean_doc) 
-        return clean_doc
 
-    def compile(self, json_fname = 'tweets.json'):
+    def remove_span(self, doc, idxs):
+        from spacy.attrs import LOWER, POS, ENT_TYPE, IS_ALPHA
+        from spacy.tokens import Doc
+        import numpy as np
+        arr = doc.to_array([LOWER, POS, ENT_TYPE, IS_ALPHA])
+        arr = np.delete(np_array, idxs)
+        words = [t.text for i, t in enumerate(doc) if i not in idxs]
+        doc = Doc(doc.vocab, words = words)
+        doc.from_array([LOWER, POS, ENT_TYPE, IS_ALPHA], arr)
+        return doc
+        
+    def clean_doc(self, doc, remove_mentions = True, remove_urls = True):
+        ''' Clean a SpaCy document. '''
+        from nltk.tokenize.casual import _replace_html_entities
+        import re
+
+        mentions = [idx for idx, tok in enumerate(doc) 
+                    if tok[0] == '@' and remove_mentions]
+        urls = [idx for idx, tok in enumerate(doc) 
+                if tok.like_url and remove_urls]
+        doc = self.remove_span(doc, mentions + urls)
+
+        doc = doc.text
+        doc = _replace_html_entities(doc)
+        doc = re.sub(r'[^a-zA-Z.,:;-_!"#%&/()=@£${\[\]}+~*^<> ]', '', doc)
+        doc = re.sub(r' +', ' ', doc) 
+        return doc.strip()
+
+    def compile(self, json_fname = 'tweets.json', remove_mentions = True,
+        remove_urls = True):
         ''' Load in the tweets from a json file, split into sentences 
             and count syllables.
     
             INPUT
                 json_fname = 'tweets.json'
                     The json file containing all the tweets
+                remove_mentions = True
+                    Remove all mentions (e.g. @username) from the tweets
+                remove_urls = True
+                    Remove all urls from the tweets
         '''
         import json
         import os
-        import spacy
+        import en_core_web_sm as en
         import pandas as pd
         import numpy as np
         from tqdm import tqdm
@@ -66,13 +90,14 @@ class TrumpTweets():
             tweets = [tweet['text'] for tweet in tweets]
 
         # Load SpaCy's English NLP model
-        nlp = spacy.load('en_core_web_sm', disable = ['tagger', 'ner'])
+        nlp = en.load(disable = ['tagger', 'ner'])
 
         # Tokenise tweets and pull out cleaned sentences
         tweets = self.map_docs(tweets, fn = nlp,
             pbar_desc = 'Splitting tweets into sentences')
-        sents = [self.clean_doc(sent.text) for tweet in tweets 
-            for sent in tweet.sents]
+        sents = [self.clean_doc(sent, remove_mentions = remove_mentions,
+                 remove_urls = remove_urls) for tweet in tweets 
+                 for sent in tweet.sents]
 
         # Count syllables
         counter = load_model()
@@ -179,6 +204,4 @@ class TrumpTweets():
 
 if __name__ == '__main__':
     tt = TrumpTweets()
-    for _ in range(3):
-        print('')
-        print(tt.haiku(include_mentions = False, include_hashtags = True))
+    tt.compile()
