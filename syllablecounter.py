@@ -220,7 +220,7 @@ def load_model(name = 'counter'):
     from pathlib import Path
 
     # Get the checkpoint path
-    paths = list(Path('.').glob('{}*.pt'.format(name)))
+    paths = list(Path('data').glob('{}*.pt'.format(name)))
     if len(paths) > 1:
         print('Multiple models found:')
         for idx, path in enumerate(paths):
