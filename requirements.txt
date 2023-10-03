@@ -30,7 +30,7 @@ thinc==7.3.1
 torch==1.13.1
 torchtext==0.4.0
 tqdm==4.38.0
-urllib3==1.26.5
+urllib3==1.26.17
 wasabi==0.4.0
 Werkzeug==2.2.3
 zipp==0.6.0
